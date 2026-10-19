@@ -51,13 +51,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/你的用户名/command-center.git"
+    "url": "git+https://github.com/yuzhoudiyishuai01-pixel/command-center.git"
   },
   "bugs": {
-    "url": "https://github.com/你的用户名/command-center/issues"
+    "url": "https://github.com/yuzhoudiyishuai01-pixel/command-center/issues"
   },
-  "homepage": "https://github.com/你的用户名/command-center#readme"
+  "homepage": "https://github.com/yuzhoudiyishuai01-pixel/command-center#readme"
 }
-
-
 
