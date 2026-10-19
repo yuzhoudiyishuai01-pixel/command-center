@@ -67,11 +67,28 @@ export function describeAvailability() {
 function buildArgs({ prompt, systemPrompt, sessionId }) {
   const cfg = backendConfig();
   const args = ["exec"];
+  // Codex 没有"追回系统提示"的开关，人格与上文直接拼进提示词。
+  const full = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
 
-  // 续接旧会话：codex exec resume <ID> <PROMPT>
-  if (sessionId) args.push("resume", sessionId);
+  // 续接旧会话。
+  //
+  // 新版 Codex CLI 把 resume 做成了子命令（codex exec resume），并且它**只接受
+  // 自己那部分参数**：没有 --cd/-C，也没有 --sandbox。早期实现把 --cd 之类的
+  // 参数塞在 resume 之后，CLI 直接把 --cd 当成了提示词，报
+  // "tip: to pass '--cd' as a value, use '-- --cd'"。
+  // 另外 resume 默认按 cwd 过滤会话，而我们的进程 cwd 与工作区可能不同，
+  // 所以显式加 --all，靠 UUID 定位。
+  if (sessionId) {
+    args.push("resume", "--json", "--skip-git-repo-check", "--all");
+    if (cfg.codexBypassSandbox !== false) {
+      args.push("--dangerously-bypass-approvals-and-sandbox");
+    }
+    if (cfg.codexModel) args.push("--model", cfg.codexModel);
+    args.push("--", sessionId, full);
+    return args;
+  }
 
-  args.push("--json", "--skip-git-repo-check", "--cd", config.workspace);
+  args.push("--json", "--skip-git-repo-check", "-C", config.workspace);
 
   // 权限：指挥室已在自己的沙箱内运行，这里让 Codex 不再逐次确认。
   if (cfg.codexBypassSandbox !== false) {
@@ -80,11 +97,8 @@ function buildArgs({ prompt, systemPrompt, sessionId }) {
     args.push("--sandbox", cfg.codexSandbox);
   }
 
-  const model = cfg.codexModel;
-  if (model) args.push("--model", model);
+  if (cfg.codexModel) args.push("--model", cfg.codexModel);
 
-  // Codex 没有"追回系统提示"的开关，人格与上文直接拼进提示词。
-  const full = systemPrompt ? `${systemPrompt}\n\n---\n\n${prompt}` : prompt;
   args.push("--", full);
   return args;
 }
