@@ -38,7 +38,7 @@ if errorlevel 1 (
 REM -- open the window ----------------------------------------------------------
 REM open-window.ps1 reads data\.token and opens an app-mode window with the
 REM tokenised URL, so the shared-token auth works without typing anything.
-powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\open-window.ps1" -Root "%~dp0" -Port %PORT%
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\open-window.ps1" -Port %PORT%
 if errorlevel 1 (
   echo.
   echo   Failed to open the window. Open the URL manually.

@@ -14,9 +14,17 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-if (-not $Root) {
+# Sanitise -Root. A .cmd launcher normally passes "%~dp0", which ends with a
+# backslash: inside a quoted argument that trailing backslash escapes the quote
+# and PowerShell receives garbage like  "C:\path\" -Port 8787 . Trim quotes,
+# slashes and whitespace, and fall back to the script's own project root.
+if ($Root) {
+  $Root = $Root.Trim().Trim('"').TrimEnd('\', '/')
+}
+if (-not $Root -or -not (Test-Path -LiteralPath $Root -PathType Container)) {
   $Root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 }
+$Root = (Resolve-Path -LiteralPath $Root).Path
 
 $tokenPath = Join-Path $Root "data\.token"
 $token = ""
