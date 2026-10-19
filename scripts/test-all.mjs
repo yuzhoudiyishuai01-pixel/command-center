@@ -12,6 +12,7 @@ const ROOT = resolve(import.meta.dirname, "..");
 const STEPS = [
   ["语法检查", "scripts/check-syntax.mjs"],
   ["存储层", "scripts/test-store.mjs"],
+  ["作业队列", "scripts/test-queue.mjs"],
   ["体量保留", "scripts/test-retention.mjs"],
   ["鉴权与接口", "scripts/test-auth.mjs"],
 ];

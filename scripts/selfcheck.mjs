@@ -68,8 +68,7 @@ async function main() {
   const streamDone = (async () => {
     const response = await fetch(`${BASE}/api/rooms/${room.id}/events`, {
       signal: controller.signal,
-      headers: AUTH,
-      headers: { accept: "text/event-stream" },
+      headers: { accept: "text/event-stream", ...AUTH },
     });
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
@@ -105,7 +104,7 @@ async function main() {
 
   const postResponse = await fetch(`${BASE}/api/rooms/${room.id}/messages`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...AUTH },
     body: JSON.stringify({ text: instruction }),
   });
   if (postResponse.status !== 202) {

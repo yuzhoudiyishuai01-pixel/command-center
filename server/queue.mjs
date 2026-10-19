@@ -31,6 +31,13 @@ export class TimeoutError extends Error {
   }
 }
 
+/** 把 signal 的 reason 归一成 TimeoutError / AbortedError。 */
+function toAbortReason(signal) {
+  const reason = signal?.reason;
+  if (reason instanceof TimeoutError) return reason;
+  if (reason instanceof AbortedError) return reason;
+  return new AbortedError();
+}
 export class TurnQueue {
   /**
    * @param {{maxConcurrent?: number, perMemberSerial?: boolean, onEvent?: (event: object) => void}} [options]
@@ -111,13 +118,12 @@ export class TurnQueue {
 
     try {
       const value = await task(controller.signal);
+      // 任务自己吞掉了 abort（例如把中止当成正常返回）时，队列仍要如实
+      // 报超时/取消——否则调用方会把一次被强杀的作业当成成功。
+      if (controller.signal.aborted) throw toAbortReason(controller.signal);
       return value;
     } catch (error) {
-      if (controller.signal.aborted) {
-        const reason = controller.signal.reason;
-        if (reason instanceof TimeoutError) throw reason;
-        throw reason instanceof AbortedError ? reason : new AbortedError();
-      }
+      if (controller.signal.aborted) throw toAbortReason(controller.signal);
       throw error;
     } finally {
       if (timer) clearTimeout(timer);
