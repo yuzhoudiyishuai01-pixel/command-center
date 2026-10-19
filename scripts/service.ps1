@@ -32,11 +32,29 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $url = "http://${BindHost}:${Port}/api/state"
 
+# Shared-token auth is on by default. Read data\.token so the readiness probe
+# can authenticate; without it every probe gets 401 and the launcher wrongly
+# concludes "service did not start" (this is exactly what broke double-click).
+$authHeaders = @{}
+$tokenPath = Join-Path $projectRoot "data\.token"
+if (Test-Path -LiteralPath $tokenPath) {
+  $token = (Get-Content -LiteralPath $tokenPath -Raw).Trim()
+  if ($token) { $authHeaders["Authorization"] = "Bearer $token" }
+}
+
 function Test-Service {
   try {
-    $response = Invoke-WebRequest -Uri $url -TimeoutSec 2 -UseBasicParsing -ErrorAction Stop
+    $response = Invoke-WebRequest -Uri $url -TimeoutSec 2 -UseBasicParsing -Headers $authHeaders -ErrorAction Stop
     return $response.StatusCode -eq 200
   } catch {
+    # A 401 still proves something is listening and answering on this port:
+    # treat it as "already running" instead of trying to start a second copy.
+    try {
+      $code = $_.Exception.Response.StatusCode.value__
+      if ($code -eq 401) { return $true }
+    } catch {
+      # no HTTP response at all
+    }
     return $false
   }
 }
