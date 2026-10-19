@@ -7,6 +7,8 @@ or a CLI you already have installed and logged in (DeepSeek Harness, Claude Code
 You type an instruction, they actually do the work — reading and writing files, running commands,
 searching the web — and the room shows every thinking step, tool call and token count live.
 
+![Command Center — first run, empty roster](docs/screenshot.png)
+
 ```
 你 (commander)                     ┌─ DeepSeek  (CLI, has tools)
    │  "@Claude review the diff"     ├─ Claude    (CLI, has tools)
