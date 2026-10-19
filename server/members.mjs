@@ -1,12 +1,12 @@
 /**
  * 成员注册表：成员是**数据**，不是代码。
  *
- * 开源版本里这条线很重要：项目不再内置"不可删除的成员"，而是在首次启动时
- * 把 seeds/members.seed.json 播种到 data/members.json，之后一切以数据文件为准。
- * 用户可以随意增删改——包括把默认那四位删光，换成自己的成员。
+ * 首次启动时名册是**空的**：成员完全由用户自己添加（API 或本机 CLI），
+ * 项目不附带任何预设成员。这样每个人拿到的都是一个干净的工作台，而不是
+ * 一堆需要先删掉的示例。
  *
- * 为什么默认名册仍然随项目发布：新用户克隆下来总得有东西可试，"四张白纸"
- * 的学习成本太高。但它是**种子**，不是特权：删掉不会再自动长回来。
+ * `seeds/members.example.json` 只是**参考样例**（文档/README 引用），
+ * 不会被自动加载；想从它开始可以手工复制成 data/members.json。
  *
  * 后端类型（backend）：
  *   dsh        —— 内置 DeepSeek Harness 一次性运行器（有工具能力，需 dsh CLI）
@@ -25,7 +25,7 @@ import { config } from "./config.mjs";
 import { persistApiKey, removeApiKey } from "./secrets-store.mjs";
 
 const STORE_PATH = resolve(config.dataDir, "members.json");
-const SEED_PATH = resolve(config.projectRoot, "seeds", "members.seed.json");
+const EXAMPLE_PATH = resolve(config.projectRoot, "seeds", "members.example.json");
 const FILE_VERSION = 2;
 
 /** 允许的后端类型，以及它是否具备"动手"能力。 */
@@ -39,31 +39,22 @@ export const BACKEND_KINDS = {
 
 let cache = null;
 
-function readSeedMembers() {
-  try {
-    const parsed = JSON.parse(readFileSync(SEED_PATH, "utf8"));
-    return Array.isArray(parsed?.members) ? parsed.members : [];
-  } catch {
-    // 种子文件坏了不该阻塞启动：空名册也能用（界面里会引导添加成员）。
-    return [];
-  }
-}
-
 /**
- * 读 data/members.json；不存在时按种子播种。
+ * 读 data/members.json；不存在时创建一个空名册。
  *
- * 播种只发生一次。之后即使名册被删空，也不会再自动长回来——这是用户的决定。
+ * 空名册是**有意的默认状态**：用户下载后必须自己添加至少一位成员
+ * （API 或本机已登录的 CLI），界面会给出引导。
  */
 function loadMembers() {
   if (cache !== null) return cache;
 
   if (!existsSync(STORE_PATH)) {
-    const seeded = readSeedMembers().map((member) => ({ ...member, seed: true }));
-    cache = seeded;
+    cache = [];
     try {
-      saveMembers(seeded);
+      saveMembers([]);
+      console.log("  ▸ 名册为空    请在界面里添加第一位成员（API 或本机 CLI）");
     } catch (error) {
-      console.error(`[members] 播种默认名册失败：${error.message}`);
+      console.error(`[members] 创建空名册失败：${error.message}`);
     }
     return cache;
   }
@@ -73,24 +64,22 @@ function loadMembers() {
     // 兼容早期版本：数组形式 / {members:[...]}
     const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.members) ? parsed.members : [];
 
-    // 老版本把"内置成员"写在代码里，members.json 只存自定义成员。升级到开源版
-    // 之后内置不再存在，如果只读文件，用户会突然失去默认那四位成员。
-    // 所以 version < 2 时做一次合并：种子成员 + 旧自定义成员（同 id 以旧自定义为准）。
+    // 老版本把"内置成员"写在代码里，members.json 只存自定义成员。
+    // 升级后内置不再存在：保留用户自己加过的成员即可，不自动补示例成员。
     if (!Array.isArray(parsed) && parsed?.version !== FILE_VERSION) {
-      const seed = readSeedMembers().map((member) => ({ ...member, seed: true }));
-      const custom = list.map((member) => ({ ...member, seed: member.seed ?? Boolean(member.builtin), builtin: undefined }));
-      const merged = new Map(seed.map((member) => [member.id, member]));
-      for (const member of custom) merged.set(member.id, member);
-      const result = [...merged.values()];
-      console.log(`  ▸ 成员迁移  旧版名册已升级：种子 ${seed.length} 位 + 自定义 ${custom.length} 位`);
-      saveMembers(result);
+      const custom = list.map((member) => ({
+        ...member,
+        seed: false,
+        builtin: undefined,
+      }));
+      console.log(`  ▸ 成员迁移    旧版名册已升级：保留 ${custom.length} 位自定义成员`);
+      saveMembers(custom);
       return cache;
     }
 
     cache = list.map((member) => ({
       ...member,
-      // 老数据里的 builtin 标记统一改成 seed（只表示"来自种子"，不再有特权）
-      seed: member.seed ?? Boolean(member.builtin),
+      seed: false,
       builtin: undefined,
     }));
   } catch (error) {
@@ -283,6 +272,7 @@ export function membersPath() {
   return STORE_PATH;
 }
 
-export function seedPath() {
-  return SEED_PATH;
+/** 示例名册路径（只用于文档/README 引用，不会被自动加载）。 */
+export function examplePath() {
+  return EXAMPLE_PATH;
 }

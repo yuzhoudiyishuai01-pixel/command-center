@@ -18,12 +18,13 @@ npm start
 
 首次启动会：
 
-1. 把 [`seeds/members.seed.json`](seeds/members.seed.json) 播种成 `data/members.json`（四个示例成员）；
+1. 创建 `data/` 目录，**名册是空的**（项目不预置任何成员）；
 2. 生成访问 token 到 `data/.token`；
 3. 打印一个带 token 的网址，并在浏览器里打开。
 
-打开那个网址即可（之后浏览器会记住 cookie，普通书签也能进）。然后就可以改名、改人格，
-或者直接删掉示例成员，换成你自己的。
+打开那个网址后，点界面中间的「＋ 添加 API 成员」或「＋ 添加 CLI 成员」，
+填上你自己的 API（地址 / 模型 / 密钥）或选一个本机已登录的 CLI 即可。
+成员会自动加入「指挥部」，并拥有自己的私人频道。
 
 Windows 也可以双击 `启动指挥室.cmd`：它会启动服务并开一个带 token 的独立窗口。
 
@@ -38,9 +39,20 @@ Windows 也可以双击 `启动指挥室.cmd`：它会启动服务并开一个�
 | `anthropic-api` | 纯对话 | baseUrl + model + API key |
 
 界面上点成员旁边的 ✎ 可改人格，✕ 可删除（示例成员同样可删）。
-名册存在 `data/members.json`，删掉该文件重启即重新播种。
+名册存在 `data/members.json`，删掉该文件重启即回到空名册。
 
 API 密钥存在 `secrets.json`（已 gitignore），不会进成员定义，也不会回显到浏览器。
+
+## 打包发布
+
+```powershell
+npm run package
+```
+
+产物是 `dist/command-center-v<版本>.zip`（macOS/Linux 为 `.tar.gz`），只含运行所需文件：
+`bin/ server/ public/ scripts/ seeds/ docs/` 与文档、启动脚本。**`data/`、`runtime/`、
+`secrets.json`、`.git` 一律不进包**——用户解压后是干净的空工作台，附带 `START-HERE.txt` 说明。
+把压缩包传到 GitHub Releases 即可。
 
 ## 安全
 

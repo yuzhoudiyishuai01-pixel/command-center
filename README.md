@@ -46,7 +46,7 @@ cd command-center
 npm start          # starts the server and opens the browser
 ```
 
-The first start seeds four example members (`seeds/members.seed.json`) and prints a URL like:
+The first start creates `data/` with an **empty member roster** (by design) and prints a URL like:
 
 ```
 界面      http://127.0.0.1:8787/?token=Q8t...   ← open this
@@ -54,7 +54,8 @@ The first start seeds four example members (`seeds/members.seed.json`) and print
 ```
 
 Open that URL once — the browser keeps a cookie, so bookmarks without the token also work
-afterwards. Then edit or delete the seeded members and add your own.
+afterwards. Then **add your first member**: an OpenAI/Anthropic-compatible API, or a CLI you
+already have installed and logged in. Nothing is pre-configured; you bring the members.
 
 > `npm start` uses `bin/command-center.mjs`, which opens the browser for you.
 > In a container or over SSH use `npm run serve` (no browser) — the URL is printed at startup.
@@ -97,8 +98,9 @@ Behaviour:
 | `anthropic-api` | none (pure chat) | `baseUrl` + `model` + API key |
 
 Every member — including the seeded ones — can be renamed, re-persona'd or deleted.
-The member list lives in `data/members.json`; delete the file to re-seed from
-[`seeds/members.seed.json`](seeds/members.seed.json).
+The member list lives in `data/members.json`; delete that file to get an empty roster again.
+[`seeds/members.example.json`](seeds/members.example.json) is an optional template you can copy
+over `data/members.json` if you prefer editing JSON to clicking.
 
 ## Configuration
 
@@ -170,6 +172,19 @@ Design notes worth knowing:
   instead of silently dropping tool-call events.
 - **Old turns are archived, never deleted.** `data/archive/*.jsonl.gz` keeps the full
   transcript while the live room shrinks to summaries.
+
+## Packaging a release
+
+```bash
+npm run package
+```
+
+Produces `dist/command-center-v<version>.zip` (or `.tar.gz` on macOS/Linux) containing only what
+is needed to run: `bin/ server/ public/ scripts/ seeds/ docs/`, docs, launcher and
+`cc.config.example.json`. **`data/`, `runtime/`, `secrets.json` and `.git` are never included** —
+the downloaded copy starts as a clean, memberless workspace with a `START-HERE.txt`.
+
+Upload the archive to GitHub Releases; the repository itself is just `git push`.
 
 ## Tests
 

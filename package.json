@@ -11,6 +11,22 @@
   "bin": {
     "command-center": "./bin/command-center.mjs"
   },
+  "files": [
+    "bin/",
+    "server/",
+    "public/",
+    "scripts/",
+    "seeds/",
+    "docs/",
+    "README.md",
+    "README.zh-CN.md",
+    "LICENSE",
+    "cc.config.example.json",
+    "启动指挥室.cmd",
+    "Login-Claude.ps1",
+    "Login-Codex.ps1",
+    "Test-ClaudeCodeEndpoint.ps1"
+  ],
   "scripts": {
     "start": "node bin/command-center.mjs",
     "start:nologin": "node bin/command-center.mjs --no-open",
@@ -21,7 +37,8 @@
     "test:retention": "node scripts/test-retention.mjs",
     "test:members": "node scripts/test-member-flow.mjs",
     "test:auth": "node scripts/test-auth.mjs",
-    "check": "node scripts/check-syntax.mjs"
+    "check": "node scripts/check-syntax.mjs",
+    "package": "node scripts/package.mjs"
   },
   "keywords": [
     "ai-agents",

@@ -24,7 +24,7 @@ import { hasApiKey } from "./api-backend.mjs";
 import { backendNameFor } from "./backends.mjs";
 import { publicCapabilities } from "./capabilities.mjs";
 import { backendAvailability, BACKEND_LABELS } from "./dispatcher.mjs";
-import { createRoom, deleteRoom, flushNow, getRoom, getState, listRooms, removeMemberFromRooms, resetAgentSessions, storageInfo, touch } from "./store.mjs";
+import { createRoom, deleteRoom, ensureMemberRooms, flushNow, getRoom, getState, listRooms, removeMemberFromRooms, resetAgentSessions, storageInfo, touch } from "./store.mjs";
 import { pageBefore, recentWindow, roomFootprint, compactMessage } from "./retention.mjs";
 import { handleCommanderMessage } from "./orchestrator.mjs";
 import { persistApiKey, removeApiKey } from "./secrets-store.mjs";
@@ -463,7 +463,20 @@ async function handleApi(req, res, url) {
 
     // 密钥已由 createMember 原子地写进 secrets.json（失败则整体回滚），
     // 这里不再重复处理。
-    sendJson(res, 201, { member: publicAgents().find((item) => item.id === result.member.id) });
+
+    // 安置新成员：进全员频道 + 建私人频道。空名册的第一位成员靠这一步
+    // 才能真正“可用”，否则界面有成员但频道里没人，派活会静默失败。
+    const placement = ensureMemberRooms(result.member);
+    for (const roomId of ["group", placement.dmRoomId].filter(Boolean)) {
+      const room = getRoom(roomId);
+      if (!room) continue;
+      publish(roomId, { type: "room_updated", room: roomSummary(room) });
+    }
+
+    sendJson(res, 201, {
+      member: publicAgents().find((item) => item.id === result.member.id),
+      rooms: { group: placement.group, dm: placement.dmRoomId },
+    });
     return true;
   }
 

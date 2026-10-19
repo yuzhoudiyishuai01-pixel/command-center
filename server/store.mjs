@@ -404,3 +404,63 @@ export function removeMemberFromRooms(agentId) {
   touch();
   return { removedRooms, touchedRooms };
 }
+
+/**
+ * 新成员加入后的默认安置：进全员频道 + 建一个属于它的私人频道。
+ *
+ * 为什么需要：开源版的初始名册是空的，房间也只有一个空的「指挥部」。
+ * 用户添加第一位成员时，如果什么都不做，界面上有成员但频道里没人，
+ * 派活会静默失败——这是最容易踩的坑。
+ *
+ * @param {{id: string, name: string}} member
+ * @returns {{group: boolean, dmRoomId: string|null}}
+ */
+export function ensureMemberRooms(member) {
+  const snapshot = getState();
+  const now = new Date().toISOString();
+  let joinedGroup = false;
+
+  const group = getRoom("group");
+  if (group) {
+    if (!group.members.includes(member.id)) {
+      group.members.push(member.id);
+      storage.rewriteRoom(group);
+      joinedGroup = true;
+    }
+  } else {
+    const room = {
+      id: "group",
+      kind: "group",
+      title: "指挥部",
+      members: [member.id],
+      createdAt: now,
+      messages: [],
+      sessions: {},
+    };
+    snapshot.rooms.push(room);
+    snapshot.order.push(room.id);
+    storage.rewriteRoom(room);
+    joinedGroup = true;
+  }
+
+  const dmId = `dm-${member.id}`;
+  let dmRoomId = null;
+  if (!getRoom(dmId)) {
+    const room = {
+      id: dmId,
+      kind: "private",
+      title: member.name,
+      members: [member.id],
+      createdAt: now,
+      messages: [],
+      sessions: {},
+    };
+    snapshot.rooms.push(room);
+    snapshot.order.push(room.id);
+    storage.rewriteRoom(room);
+    dmRoomId = dmId;
+  }
+
+  touch();
+  return { group: joinedGroup, dmRoomId };
+}

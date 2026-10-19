@@ -2749,3 +2749,15 @@ kbd {
   color: var(--text);
   opacity: 0.86;
 }
+
+/* 空态的两个入口并排 */
+.empty-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.empty-actions .primary-btn,
+.empty-actions .ghost-btn {
+  padding: 8px 16px;
+}

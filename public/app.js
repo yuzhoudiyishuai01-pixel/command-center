@@ -738,13 +738,24 @@ function renderTranscript() {
       title.textContent = "NO MEMBERS YET";
       const hint = document.createElement("p");
       hint.textContent =
-        "这个指挥室还没有成员。成员由你自己定义：可以接 OpenAI/Anthropic 兼容的 API，也可以接本机已登录的 CLI（DSH / Claude Code / Codex）。";
-      const cta = document.createElement("button");
-      cta.type = "button";
-      cta.className = "primary-btn";
-      cta.textContent = "＋ 添加第一个成员";
-      cta.addEventListener("click", openNewMemberDialog);
-      empty.append(title, hint, cta);
+        "指挥室不预置成员：你需要添加至少一位。两种方式——接一个 OpenAI / Anthropic 兼容的聊天 API（只需地址、模型、密钥），或接本机已登录的 CLI（DSH / Claude Code / Codex，能真正读写文件、执行命令）。";
+      const actions = document.createElement("div");
+      actions.className = "empty-actions";
+
+      const apiBtn = document.createElement("button");
+      apiBtn.type = "button";
+      apiBtn.className = "primary-btn";
+      apiBtn.textContent = "＋ 添加 API 成员";
+      apiBtn.addEventListener("click", () => openNewMemberDialog("openai-api"));
+
+      const cliBtn = document.createElement("button");
+      cliBtn.type = "button";
+      cliBtn.className = "ghost-btn";
+      cliBtn.textContent = "＋ 添加 CLI 成员";
+      cliBtn.addEventListener("click", () => openNewMemberDialog("claude-cli"));
+
+      actions.append(apiBtn, cliBtn);
+      empty.append(title, hint, actions);
       host.append(empty);
       return;
     }
@@ -1727,7 +1738,7 @@ const BACKEND_LABEL_FALLBACK = {
   "anthropic-api": "Anthropic API（纯对话）",
 };
 
-function openNewMemberDialog() {
+function openNewMemberDialog(preferredBackend = null) {
   const dialog = $("new-member-dialog");
   const select = $("nm-backend");
   const apiFields = $("nm-api-fields");
@@ -1765,6 +1776,10 @@ function openNewMemberDialog() {
     $("nm-model").required = isApi;
     $("nm-apikey").required = isApi;
   };
+  // 从空态引导进来时可以预选后端（例如"添加 API 成员"直接选 openai-api）。
+  if (preferredBackend && kinds.some((kind) => kind.id === preferredBackend)) {
+    select.value = preferredBackend;
+  }
   select.onchange = syncBackendUi;
   syncBackendUi();
 
@@ -1804,14 +1819,18 @@ function openNewMemberDialog() {
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.error ?? `创建失败：${response.status}`);
 
-      // 重新拉快照，成员列表与后端清单一起刷新
-      const snapshot = await fetchState(state.activeRoomId);
-      applySnapshot(snapshot);
-      renderMembers();
-      renderComposerTargets();
-      renderStageHeader();
       dialog.close();
-      toast(`成员「${body.member?.name ?? payload.name}」已创建`);
+      toast(`成员「${body.member?.name ?? payload.name}」已创建并加入指挥部`);
+
+      // 服务端会把新成员安置进「指挥部」并建好私人频道；重新拉快照即可看到。
+      const snapshot = await fetchState(state.activeRoomId ?? "group");
+      applySnapshot(snapshot);
+      state.renderCache = { rooms: null, members: null };
+      renderRooms();
+      renderMembers();
+      renderStageHeader();
+      renderTranscript();
+      renderComposerTargets();
     } catch (error) {
       toast(error.message, "error");
     } finally {

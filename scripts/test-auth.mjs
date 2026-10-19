@@ -102,8 +102,23 @@ try {
   const bearer = await fetch(`${base}/api/state`, { headers: { authorization: `Bearer ${TOKEN}` } });
   const state = await bearer.json();
   check("Bearer 头可用", bearer.status === 200);
-  check("返回成员名册", Array.isArray(state.agents) && state.agents.length > 0, `agents=${state.agents?.length}`);
+  check("初始名册为空（不预置成员）", Array.isArray(state.agents) && state.agents.length === 0, `agents=${state.agents?.length}`);
   check("返回房间列表", Array.isArray(state.rooms) && state.rooms.length > 0);
+
+  // 添加第一位成员：应自动进「指挥部」并建私人频道，否则界面有成员但派活无效。
+  const created = await fetch(`${base}/api/members`, {
+    method: "POST",
+    headers: { "content-type": "application/json", cookie },
+    body: JSON.stringify({ name: "测试成员", role: "自检", backend: "dsh" }),
+  });
+  const createdBody = await created.json();
+  check("可以添加 CLI 成员（无需 API key）", created.status === 201, `status=${created.status} ${createdBody.error ?? ""}`);
+  check("新成员自动加入指挥部", createdBody.rooms?.group === true);
+
+  const afterCreate = await (await fetch(`${base}/api/state`, { headers: { cookie } })).json();
+  const group = afterCreate.rooms.find((room) => room.id === "group");
+  check("指挥部包含新成员", Boolean(group?.members.includes(createdBody.member?.id)), group?.members?.join(","));
+  check("为新成员建了私人频道", afterCreate.rooms.some((room) => room.id === `dm-${createdBody.member?.id}`));
   check("返回队列状态", typeof state.queue?.active === "number");
   check("返回存储摘要", typeof state.storage?.rooms === "number");
 
