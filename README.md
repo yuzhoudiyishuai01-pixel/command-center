@@ -41,7 +41,7 @@ searching the web — and the room shows every thinking step, tool call and toke
 ## Quick start
 
 ```bash
-git clone https://github.com/your-name/command-center.git
+git clone https://github.com/yuzhoudiyishuai01-pixel/command-center.git
 cd command-center
 npm start          # starts the server and opens the browser
 ```
