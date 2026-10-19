@@ -45,6 +45,15 @@ $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 $dataDir = Join-Path $projectRoot "data"
 $url = "http://${BindHost}:${Port}/api/state"
+# Shared-token auth: read data\.token so health probes still work after the
+# open-source hardening. Probes are harmless reads; without the header they now
+# get 401 and every check reports FAIL.
+$tokenPath = Join-Path $dataDir ".token"
+$authHeaders = @{}
+if (Test-Path -LiteralPath $tokenPath) {
+  $token = (Get-Content -LiteralPath $tokenPath -Raw).Trim()
+  if ($token) { $authHeaders["Authorization"] = "Bearer $token" }
+}
 $lockPath = Join-Path $dataDir "restart.lock"
 $stamp = Get-Date -Format "yyyyMMdd-HHmmss"
 $logPath = Join-Path $dataDir "restart-$stamp.log"
@@ -63,7 +72,7 @@ function Get-ServiceProcess {
 }
 
 function Get-BusyRooms {
-  try { $state = Invoke-RestMethod -Uri $url -TimeoutSec 5 -ErrorAction Stop } catch { return $null }
+  try { $state = Invoke-RestMethod -Uri $url -TimeoutSec 5 -Headers $authHeaders -ErrorAction Stop } catch { return $null }
   $busy = @()
   foreach ($room in $state.rooms) { if ($room.running) { $busy += [string]$room.title } }
   # Comma operator: an empty array returned bare collapses to $null in PowerShell,
@@ -156,7 +165,7 @@ try {
   for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Milliseconds 500
     try {
-      $null = Invoke-RestMethod -Uri $url -TimeoutSec 3 -ErrorAction Stop
+      $null = Invoke-RestMethod -Uri $url -TimeoutSec 3 -Headers $authHeaders -ErrorAction Stop
       $ready = $true
       break
     } catch { }

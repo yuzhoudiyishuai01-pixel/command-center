@@ -11,6 +11,7 @@
  *   node scripts/selfcheck.mjs --base http://127.0.0.1:8787
  */
 import { readFile, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 import { config } from "../server/config.mjs";
@@ -19,6 +20,18 @@ const args = process.argv.slice(2);
 const baseIndex = args.indexOf("--base");
 const BASE = baseIndex !== -1 ? args[baseIndex + 1] : `http://${config.host}:${config.port}`;
 const agentId = args.find((arg) => !arg.startsWith("--") && arg !== BASE) ?? "deepseek";
+
+// 服务默认启用共享 token；自检也要带上，否则拿到的是 401。
+const TOKEN =
+  process.env.CC_TOKEN ??
+  (() => {
+    try {
+      return readFileSync(new URL("../data/.token", import.meta.url), "utf8").trim();
+    } catch {
+      return "";
+    }
+  })();
+const AUTH = TOKEN ? { authorization: `Bearer ${TOKEN}` } : {};
 
 const PROBE_NAME = `selfcheck-${agentId}-${Date.now()}.txt`;
 const PROBE_PATH = resolve(config.workspace, PROBE_NAME);
@@ -37,7 +50,7 @@ async function main() {
   // 1) 服务可达
   let snapshot;
   try {
-    const response = await fetch(`${BASE}/api/state`);
+    const response = await fetch(`${BASE}/api/state`, { headers: AUTH });
     if (!response.ok) fail(`/api/state 返回 ${response.status}`);
     snapshot = await response.json();
   } catch (error) {
@@ -55,6 +68,7 @@ async function main() {
   const streamDone = (async () => {
     const response = await fetch(`${BASE}/api/rooms/${room.id}/events`, {
       signal: controller.signal,
+      headers: AUTH,
       headers: { accept: "text/event-stream" },
     });
     const reader = response.body.getReader();

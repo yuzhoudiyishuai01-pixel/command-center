@@ -61,7 +61,9 @@
             <div><dt>工作区</dt><dd id="foot-workspace" title="">—</dd></div>
             <div><dt>沙箱</dt><dd id="foot-sandbox">—</dd></div>
             <div><dt>模型路由</dt><dd id="foot-route">DeepSeek 账号</dd></div>
+            <div><dt>运行</dt><dd id="foot-turns">—</dd></div>
           </dl>
+          <button class="ghost-btn foot-search" id="search-btn" type="button" title="搜索历史（Ctrl+K）">⌕ 搜索历史</button>
         </footer>
       </aside>
 
@@ -82,10 +84,15 @@
               <span class="workload-dot"></span>
               <span id="workload-text">待命</span>
             </div>
+            <!-- 队列可视化：并发打满时新指令会排队，这里如实显示还有几轮在等 -->
+            <span class="badge queue-badge" id="queue-badge" hidden title="排队等待中的作业"></span>
             <button class="ghost-btn" id="room-members-btn" type="button" title="管理本频道成员">成员</button>
             <button class="ghost-btn danger" id="abort-btn" type="button" hidden>中止</button>
           </div>
         </header>
+
+        <!-- 环境告警：例如没装 dsh CLI、未登录、鉴权关闭。由 /api/state 的 warnings 驱动 -->
+        <div class="notice-strip" id="notice-strip" hidden></div>
 
         <div class="transcript" id="transcript" role="log" aria-live="polite"></div>
 
@@ -224,6 +231,48 @@
           <button class="ghost-btn" type="button" id="rm-close">关闭</button>
         </menu>
       </div>
+    </dialog>
+
+    <!-- 历史搜索（Ctrl+K）：跨房间检索，结果可以直接跳回当时那条消息 -->
+    <dialog class="modal modal-wide" id="search-dialog">
+      <div class="modal-inner">
+        <h3>搜索历史</h3>
+        <label class="field">
+          <span>关键词（跨所有频道）</span>
+          <input id="search-input" type="search" placeholder="例如：部署脚本、那个报错、成员名字…" autocomplete="off" />
+        </label>
+        <p class="field-hint" id="search-status">输入至少 2 个字符开始搜索。</p>
+        <ol class="search-results" id="search-results"></ol>
+        <menu class="modal-actions">
+          <button class="ghost-btn" type="button" id="search-close">关闭</button>
+        </menu>
+      </div>
+    </dialog>
+
+    <!-- 编辑成员（复用新建成员的字段，提交走 PATCH） -->
+    <dialog class="modal modal-wide" id="edit-member-dialog">
+      <form method="dialog" class="modal-inner" id="edit-member-form">
+        <h3>编辑成员</h3>
+        <div class="field-row">
+          <label class="field">
+            <span>成员名称</span>
+            <input id="em-name" type="text" maxlength="24" required />
+          </label>
+          <label class="field">
+            <span>职责</span>
+            <input id="em-role" type="text" maxlength="32" />
+          </label>
+        </div>
+        <label class="field">
+          <span>人格设定（system prompt）</span>
+          <textarea id="em-persona" rows="7"></textarea>
+        </label>
+        <p class="field-hint" id="em-hint"></p>
+        <menu class="modal-actions">
+          <button value="cancel" class="ghost-btn" type="button" id="em-cancel">取消</button>
+          <button value="ok" class="primary-btn" type="submit">保存</button>
+        </menu>
+      </form>
     </dialog>
 
     <div class="toast-stack" id="toast-stack" aria-live="assertive"></div>

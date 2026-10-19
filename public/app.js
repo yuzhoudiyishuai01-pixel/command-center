@@ -15,7 +15,12 @@ const state = {
    * 侧栏各区块上次渲染的内容签名。数据没变就跳过重建——重建会让动画重播
    * （频道高亮的 sheen、成员作业呼吸光条），一轮作业里被触发好几次就成了"闪"。
    */
-  renderCache: { rooms: "", members: "" },
+  renderCache: { rooms: null, members: null },
+  /** /api/state 下发的运行态摘要与告警 */
+  queue: null,
+  warnings: [],
+  /** 正在编辑的成员 id（编辑对话框用） */
+  editingMemberId: null,
   /** 能力开关名录（由服务端下发），与成员正交。 */
   capabilities: [],
   /** 可用的接入方式（后端类型），新建成员对话框用。 */
@@ -323,9 +328,103 @@ function renderMembers() {
     capability.textContent = agent.capabilities.some((c) => c.key === "web") ? "NET" : "LOCAL";
 
     li.append(avatar, info, capability);
-    li.title = `${agent.name} · ${agent.role}\n能力：${agent.capabilities.map((c) => c.label).join("、")}`;
+
+    // 成员由用户掌控：每一位都可以编辑/删除（包括默认那四位）。
+    const actions = document.createElement("span");
+    actions.className = "member-actions";
+    const edit = document.createElement("button");
+    edit.type = "button";
+    edit.className = "icon-btn";
+    edit.title = `编辑 ${agent.name}`;
+    edit.textContent = "✎";
+    edit.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openEditMember(agent);
+    });
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "icon-btn danger";
+    remove.title = `删除 ${agent.name}`;
+    remove.textContent = "✕";
+    remove.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void deleteMember(agent);
+    });
+    actions.append(edit, remove);
+    li.append(actions);
+
+    li.title = `${agent.name} · ${agent.role}\n后端：${agent.backendLabel ?? agent.backend}\n能力：${agent.capabilities
+      .map((c) => c.label)
+      .join("、")}`;
     host.append(li);
   }
+
+  if (state.agents.size === 0) renderMembersEmptyState();
+}
+
+/** 打开编辑成员对话框（名称/职责/人格）。 */
+function openEditMember(agent) {
+  state.editingMemberId = agent.id;
+  $("em-name").value = agent.name ?? "";
+  $("em-role").value = agent.role ?? "";
+  $("em-persona").value = "";
+  $("um-hint")?.remove();
+  $("em-hint").textContent = `后端：${agent.backendLabel ?? agent.backend}（后端类型暂不支持在这里切换，如需更换请新建成员）`;
+  const dialog = $("edit-member-dialog");
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  $("em-name").focus();
+  void fetchMemberPersona(agent.id);
+}
+
+/** 人格正文不在公开接口里（避免把提示词发到浏览器），编辑时按需单独取。 */
+async function fetchMemberPersona(memberId) {
+  try {
+    const response = await fetch(`/api/members/${encodeURIComponent(memberId)}/persona`);
+    if (!response.ok) return;
+    const payload = await response.json();
+    if (state.editingMemberId === memberId) $("em-persona").value = payload.persona ?? "";
+  } catch {
+    /* 取不到就留空，用户可重写 */
+  }
+}
+
+async function saveMemberEdits() {
+  const memberId = state.editingMemberId;
+  if (!memberId) return;
+  const body = {
+    name: $("em-name").value.trim(),
+    role: $("em-role").value.trim(),
+    persona: $("em-persona").value.trim() || undefined,
+  };
+  const response = await fetch(`/api/members/${encodeURIComponent(memberId)}`, {
+    method: "PATCH",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    toast(payload.error ?? "保存失败", "error");
+    return;
+  }
+  toast("成员已更新");
+  await fetchState(state.activeRoomId).then(applySnapshot);
+  renderMembers();
+}
+
+/** 删除成员（带确认，删除后不可恢复）。 */
+async function deleteMember(agent) {
+  if (!window.confirm(`删除成员「${agent.name}」？\n\n这会同时把它从所有频道移除。此操作不可撤销。`)) return;
+  const response = await fetch(`/api/members/${encodeURIComponent(agent.id)}`, { method: "DELETE" });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    toast(payload.error ?? "删除失败", "error");
+    return;
+  }
+  toast(`已删除 ${agent.name}`);
+  await fetchState(state.activeRoomId).then(applySnapshot);
+  renderMembers();
+  renderStageHeader();
+  renderComposerTargets();
 }
 
 function renderStageHeader() {
@@ -632,12 +731,40 @@ function renderTranscript() {
     empty.className = "transcript-empty";
     const title = document.createElement("h3");
     title.textContent = "AWAITING ORDERS";
+
+    if (state.agents.size === 0) {
+      // 开源版的第一次启动：名册是空的，先引导用户把成员加进来，
+      // 否则指挥官会面对一个能打字但没人接活的界面。
+      title.textContent = "NO MEMBERS YET";
+      const hint = document.createElement("p");
+      hint.textContent =
+        "这个指挥室还没有成员。成员由你自己定义：可以接 OpenAI/Anthropic 兼容的 API，也可以接本机已登录的 CLI（DSH / Claude Code / Codex）。";
+      const cta = document.createElement("button");
+      cta.type = "button";
+      cta.className = "primary-btn";
+      cta.textContent = "＋ 添加第一个成员";
+      cta.addEventListener("click", openNewMemberDialog);
+      empty.append(title, hint, cta);
+      host.append(empty);
+      return;
+    }
+
     const hint = document.createElement("p");
     hint.textContent =
       room.kind === "private"
-        ? `这里是 ${room.members.map((id) => agentOf(id).name).join("、")} 的私人频道。直接下达指令，他会动手去做。`
+        ? `这里是 ${room.members.map((id) => agentOf(id).name).join("、")} 的私人频道。直接下达指令，它会动手去做。`
         : "这是全员频道。直接下达指令会让所有成员并行开工；用 @ 点名可以只派给特定成员。成员会真的读写文件、执行命令、联网检索。";
     empty.append(title, hint);
+
+    if (room.members.length === 0) {
+      const cta = document.createElement("button");
+      cta.type = "button";
+      cta.className = "primary-btn";
+      cta.textContent = "把成员拉进这个频道";
+      cta.addEventListener("click", openRoomMembersDialog);
+      empty.append(cta);
+    }
+
     host.append(empty);
     return;
   }
@@ -933,10 +1060,77 @@ function applySnapshot(snapshot) {
 
   state.workspace = snapshot.workspace;
   state.permissionMode = snapshot.permissionMode;
+  state.queue = snapshot.queue ?? null;
+  state.warnings = Array.isArray(snapshot.warnings) ? snapshot.warnings : [];
 
   $("foot-workspace").textContent = snapshot.workspace ?? "—";
   $("foot-workspace").title = snapshot.workspace ?? "";
   $("foot-sandbox").textContent = snapshot.permissionMode ?? "—";
+  const routes = [...new Set(snapshot.agents.map((agent) => agent.backendLabel).filter(Boolean))];
+  $("foot-route").textContent = routes.length > 0 ? routes.slice(0, 2).join(" · ") : "—";
+
+  renderNoticeStrip();
+  updateQueueBadge();
+  renderMembersEmptyState();
+  void refreshStats();
+}
+
+/** 环境告警条：没装 CLI、没登录、鉴权关闭之类，直接摆在对话区上方。 */
+function renderNoticeStrip() {
+  const host = $("notice-strip");
+  const warnings = state.warnings ?? [];
+  if (warnings.length === 0) {
+    host.hidden = true;
+    host.textContent = "";
+    return;
+  }
+  host.hidden = false;
+  host.textContent = "";
+  for (const warning of warnings) {
+    const line = document.createElement("p");
+    line.textContent = warning;
+    host.append(line);
+  }
+}
+
+/** 队列徽标：显示排队等待中的作业数，打满并发时用户能看见"为什么还没开始"。 */
+function updateQueueBadge() {
+  const badge = $("queue-badge");
+  const queue = state.queue;
+  const pending = queue?.pending ?? 0;
+  if (!pending) {
+    badge.hidden = true;
+    return;
+  }
+  badge.hidden = false;
+  badge.textContent = `排队 ${pending}`;
+  badge.title = `并发上限 ${queue.maxConcurrent}，正在运行 ${queue.active}，等待 ${pending}`;
+}
+
+/** 侧栏底部的运行统计（取自 /api/stats，30 秒刷新一次即可）。 */
+async function refreshStats() {
+  try {
+    const response = await fetch("/api/stats");
+    if (!response.ok) return;
+    const stats = await response.json();
+    const turns = stats.turns ?? {};
+    const tokens = stats.tokens ?? {};
+    $("foot-turns").textContent = `${turns.total ?? 0} 轮 · ${fmtTokens(tokens.total ?? 0)}`;
+  } catch {
+    /* 统计拿不到不影响主流程 */
+  }
+}
+
+/** 没有任何成员时，对话区给出明确的下一步，而不是一片空白。 */
+function renderMembersEmptyState() {
+  $("member-count").textContent = String(state.agents.size);
+  const host = $("member-list");
+  if (state.agents.size > 0) return;
+  host.textContent = "";
+  const li = document.createElement("li");
+  li.className = "member-empty";
+  li.textContent = "还没有成员。点上面的 ＋ 添加第一个（API 或 CLI 都行）。";
+  host.append(li);
 }
 
 /** 确保该房间的数据已加载，并订阅其事件流。 */
@@ -1155,6 +1349,26 @@ function handleEvent(roomId, event) {
       const agent = agentOf(event.agentId);
       pushLive({ who: agent.name, what: event.message, accent: agent.accent, kind: "error" });
       toast(`${agent.name}：${event.message}`, "error");
+      break;
+    }
+
+    case "queue_wait": {
+      // 并发打满：有新作业在排队，让用户知道"还没开始"不是卡死了。
+      state.queue = { ...(state.queue ?? {}), pending: event.pending ?? 0 };
+      updateQueueBadge();
+      break;
+    }
+
+    case "queue_start": {
+      if ((event.waitMs ?? 0) > 400) {
+        const agent = agentOf(event.agentId);
+        pushLive({
+          who: agent.name,
+          what: `排队 ${Math.max(1, Math.round(event.waitMs / 1000))}s 后开始执行`,
+          accent: agent.accent,
+          kind: "info",
+        });
+      }
       break;
     }
 
@@ -1399,6 +1613,11 @@ async function dispatch() {
   const input = $("input");
   const room = currentRoom();
   if (!room) return;
+  if (state.agents.size === 0) {
+    toast("还没有成员：先添加一个成员再接活", "error");
+    openNewMemberDialog();
+    return;
+  }
   let text = input.value.trim();
   if (!text) return;
 
@@ -1743,6 +1962,116 @@ function openRoomMembersDialog() {
   $("rm-close").onclick = () => dialog.close();
 }
 
+// ══ 历史搜索（Ctrl+K）══════════════════════════════════════════════════════
+function debounce(fn, wait) {
+  let timer = null;
+  return (...args) => {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn(...args), wait);
+  };
+}
+
+function openSearchDialog() {
+  const dialog = $("search-dialog");
+  if (typeof dialog.showModal === "function") dialog.showModal();
+  const input = $("search-input");
+  input.focus();
+  input.select();
+}
+
+/**
+ * 搜索跨房间历史。
+ *
+ * 结果渲染成可点击的列表：点一条就切到那个房间、并滚动/高亮到那条消息。
+ * 体量维护降级过的历史会标注"原文在归档里"，避免用户以为内容丢了。
+ */
+async function runSearch(rawQuery) {
+  const query = String(rawQuery ?? "").trim();
+  const status = $("search-status");
+  const host = $("search-results");
+  host.textContent = "";
+
+  if (query.length < 2) {
+    status.textContent = "输入至少 2 个字符开始搜索。";
+    return;
+  }
+
+  status.textContent = "搜索中…";
+  try {
+    const response = await fetch(`/api/search?q=${encodeURIComponent(query)}&limit=40`);
+    if (!response.ok) throw new Error(`搜索失败：${response.status}`);
+    const payload = await response.json();
+    status.textContent = `找到 ${payload.total} 条${payload.total > payload.results.length ? `（显示前 ${payload.results.length} 条）` : ""}`;
+
+    for (const hit of payload.results) {
+      const item = document.createElement("li");
+      item.className = "search-hit";
+
+      const meta = document.createElement("div");
+      meta.className = "search-hit-meta";
+      const room = document.createElement("span");
+      room.textContent = `#${hit.roomTitle ?? hit.roomId}`;
+      const who = document.createElement("span");
+      who.textContent = hit.agentName ?? (hit.role === "commander" ? "指挥官" : "成员");
+      const when = document.createElement("span");
+      when.textContent = hit.at ? fmtTime(hit.at) : "";
+      meta.append(room, who, when);
+      if (hit.stubbed) {
+        const stub = document.createElement("span");
+        stub.className = "search-hit-stub";
+        stub.textContent = "归档";
+        meta.append(stub);
+      }
+
+      const snippet = document.createElement("p");
+      snippet.className = "search-hit-snippet";
+      snippet.textContent = hit.snippet ?? "";
+
+      item.append(meta, snippet);
+      item.addEventListener("click", () => {
+        void jumpToMessage(hit);
+        $("search-dialog").close();
+      });
+      host.append(item);
+    }
+  } catch (error) {
+    status.textContent = error.message;
+  }
+}
+
+/** 跳转到某条历史消息：切房间 → 拉历史窗口 → 滚动并高亮。 */
+async function jumpToMessage(hit) {
+  try {
+    if (hit.roomId !== state.activeRoomId) {
+      if (!state.rooms.some((room) => room.id === hit.roomId)) {
+        toast("这个频道已经不存在了", "error");
+        return;
+      }
+      await selectRoom(hit.roomId);
+    }
+    const room = state.roomData.get(hit.roomId);
+    if (!room) return;
+
+    // 目标不在当前窗口里：先按历史分页往前找几页（最多 5 页，避免拖死）。
+    let guard = 0;
+    while (!room.messages.some((message) => message.id === hit.messageId) && room.hasMoreHistory && guard < 5) {
+      guard += 1;
+      await loadEarlierMessages(hit.roomId);
+    }
+
+    const target = document.querySelector(`[data-message-id="${CSS.escape(hit.messageId)}"]`);
+    if (!target) {
+      toast("这条消息在更早的历史里，可用「加载更早的消息」继续翻", "info");
+      return;
+    }
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.classList.add("search-flash");
+    setTimeout(() => target.classList.remove("search-flash"), 1800);
+  } catch (error) {
+    toast(error.message, "error");
+  }
+}
+
 // ══ 启动 ═══════════════════════════════════════════════════════════════════
 async function init() {
   renderLiveFeed();
@@ -1794,6 +2123,43 @@ async function init() {
   $("new-room-btn").addEventListener("click", openNewRoomDialog);
   $("new-member-btn").addEventListener("click", openNewMemberDialog);
   $("room-members-btn").addEventListener("click", openRoomMembersDialog);
+
+  // 编辑成员
+  $("edit-member-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    await saveMemberEdits();
+    $("edit-member-dialog").close();
+  });
+  $("em-cancel").addEventListener("click", () => $("edit-member-dialog").close());
+
+  // 历史搜索
+  $("search-btn").addEventListener("click", openSearchDialog);
+  $("search-close").addEventListener("click", () => $("search-dialog").close());
+  $("search-input").addEventListener("input", debounce(() => void runSearch($("search-input").value), 220));
+
+  // Ctrl/Cmd+K 打开搜索
+  window.addEventListener("keydown", (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+      event.preventDefault();
+      openSearchDialog();
+    }
+  });
+
+  // 统计与队列：30 秒刷新一次，避免持续轮询
+  setInterval(() => {
+    void refreshStats();
+    if (!state.activeRoomId) return;
+    void fetch(`/api/state?room=${encodeURIComponent(state.activeRoomId)}`)
+      .then((response) => (response.ok ? response.json() : null))
+      .then((snapshot) => {
+        if (!snapshot) return;
+        state.queue = snapshot.queue ?? null;
+        state.warnings = snapshot.warnings ?? [];
+        renderNoticeStrip();
+        updateQueueBadge();
+      })
+      .catch(() => {});
+  }, 30_000);
 
   $("live-toggle").addEventListener("click", () => {
     const panel = $("live-panel");

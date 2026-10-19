@@ -13,7 +13,10 @@ import { randomUUID } from "node:crypto";
 
 import { agents, agentById } from "./agents.mjs";
 import { CAPABILITIES, capabilityById } from "./capabilities.mjs";
+import { config } from "./config.mjs";
 import { runTurn } from "./dispatcher.mjs";
+import { recordCommand, recordTurn } from "./metrics.mjs";
+import { AbortedError, turnQueue } from "./queue.mjs";
 import { appendMessage, getRoom, getSession, patchMessage, setSession, touch } from "./store.mjs";
 
 /** 从正文里剥掉 @能力名，返回命中的能力 id。 */
@@ -150,26 +153,61 @@ export async function dispatchToAgent({ roomId, agent, prompt, turnId, signal, o
   emit({ type: "agent_start", turnId });
 
   const room = getRoom(roomId);
-  const result = await runTurn({
-    agent,
-    prompt,
-    sessionId: getSession(roomId, agent.id),
-    signal,
-    onEvent: emit,
-    // API 后端无状态：靠这两个把该成员的多轮语境重建出来。
-    messages: room?.messages ?? [],
-    turnId,
-  });
+
+  // 排队执行：同一成员串行、全局并发有上限、单轮有硬超时。
+  // 之前是直接 Promise.all 起 N 个进程，全员开工时机器会被拖死。
+  let result;
+  try {
+    result = await turnQueue().schedule({
+      key: `${roomId}:${agent.id}`,
+      timeoutMs: config.turnTimeoutMs,
+      signal,
+      meta: { roomId, agentId: agent.id, agentName: agent.name, turnId },
+      task: (turnSignal) =>
+        runTurn({
+          agent,
+          prompt,
+          sessionId: getSession(roomId, agent.id),
+          signal: turnSignal,
+          onEvent: emit,
+          // API 后端无状态：靠这两个把该成员的多轮语境重建出来。
+          messages: room?.messages ?? [],
+          turnId,
+        }),
+    });
+  } catch (error) {
+    if (error?.timeout) {
+      const minutes = Math.max(1, Math.round(config.turnTimeoutMs / 60000));
+      result = { error: `本次作业超时（${minutes} 分钟），已被强制中止。`, aborted: true, sessionId: null };
+      emit({ type: "error", message: result.error });
+    } else if (error instanceof AbortedError || error?.aborted) {
+      result = { error: "aborted", aborted: true, sessionId: null };
+    } else {
+      result = { error: error?.message ?? String(error), aborted: false, sessionId: null };
+      emit({ type: "error", message: result.error });
+    }
+  }
 
   if (result.sessionId) setSession(roomId, agent.id, result.sessionId);
 
+  const outcome = result.aborted ? "aborted" : result.error ? "failed" : "done";
   const finalPatch = {
-    status: result.aborted ? "aborted" : result.error ? "failed" : "done",
+    status: outcome === "aborted" ? "aborted" : outcome === "failed" ? "failed" : "done",
     durationMs: Date.now() - started,
     error: result.error && result.error !== "aborted" ? result.error : null,
   };
   patchMessage(roomId, reply.id, finalPatch);
   emit({ type: "agent_end", ...finalPatch, sessionId: result.sessionId });
+
+  recordTurn({
+    roomId,
+    agentId: agent.id,
+    agentName: agent.name,
+    outcome,
+    durationMs: finalPatch.durationMs,
+    usage: reply.usage ?? null,
+    error: finalPatch.error,
+  });
 
   return { ok: !result.aborted && !result.error, messageId: reply.id, sessionId: result.sessionId };
 }
@@ -296,6 +334,7 @@ export async function handleCommanderMessage({ roomId, text, selectedCapabilitie
   });
 
   onEvent({ type: "commander", message: commanderMessage });
+  recordCommand({ roomId, text, targets });
 
   const dispatched = targets.map(agentById).filter(Boolean);
 

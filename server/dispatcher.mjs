@@ -15,7 +15,7 @@ import { backendNameFor } from "./backends.mjs";
 import { BACKEND_KINDS, memberById } from "./members.mjs";
 import { systemPromptFor } from "./agents.mjs";
 import { ensureProfileFor } from "./profiles.mjs";
-import { config } from "./config.mjs";
+import { config, dshAvailable } from "./config.mjs";
 
 /** 后端 id -> 展示文案。界面上要如实显示"由谁提供智力"。 */
 export const BACKEND_LABELS = {
@@ -29,8 +29,15 @@ export const BACKEND_LABELS = {
 const IMPLEMENTATIONS = {
   dsh: {
     label: "DeepSeek Harness",
-    isAvailable: () => true,
-    describeAvailability: () => ({ available: true, reason: "内置路由，零配置。" }),
+    // DSH 是可选依赖：没装 dsh CLI 时 DSH 成员不可用，但 API 成员照常工作。
+    isAvailable: () => dshAvailable(),
+    describeAvailability: () =>
+      dshAvailable()
+        ? { available: true, reason: "内置路由，零配置。" }
+        : {
+            available: false,
+            reason: "未检测到 dsh CLI。安装 DeepSeek Harness 或在 cc.config.json 里填写 dshCli；也可以改用 API 成员。",
+          },
   },
   "claude-cli": claudeCli,
   "codex-cli": codexCli,
@@ -103,6 +110,11 @@ export async function runTurn({ agent, prompt, sessionId = null, signal, onEvent
   // DSH 后端的人格是通过 profile 注入的，这里不需要再传系统提示。
   // 注意：新建的成员在启动时没有 profile，必须在这里补生成，否则会 exit 1。
   if (backend === "dsh") {
+    if (!dshAvailable()) {
+      const message = `${live.name} 的后端不可用：未检测到 dsh CLI。安装 DeepSeek Harness，或在 cc.config.json 里填写 dshCli；也可以给它换成 API 后端。`;
+      onEvent({ type: "error", message });
+      return { sessionId, finalText: "", exitCode: null, aborted: false, error: message, stderr: null };
+    }
     ensureProfileFor(live);
     return runDshTurn({ agentId: live.id, prompt, sessionId, signal, onEvent });
   }

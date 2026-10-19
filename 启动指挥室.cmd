@@ -35,24 +35,15 @@ if errorlevel 1 (
   exit /b 1
 )
 
-REM -- locate a Chromium browser for app-window mode ---------------------------
-set "BROWSER="
-for %%B in (
-  "%ProgramFiles%\Google\Chrome\Application\chrome.exe"
-  "%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"
-  "%LOCALAPPDATA%\Google\Chrome\Application\chrome.exe"
-  "%ProgramFiles%\Microsoft\Edge\Application\msedge.exe"
-  "%ProgramFiles(x86)%\Microsoft\Edge\Application\msedge.exe"
-) do if not defined BROWSER if exist %%B set "BROWSER=%%~B"
-
-REM -- open the window --------------------------------------------------------
-if defined BROWSER (
-  REM A dedicated --user-data-dir gives the app its own window config and
-  REM taskbar identity, so it never disturbs your normal browser profile.
-  start "" "%BROWSER%" --app="%URL%" --user-data-dir="%~dp0runtime\browser-profile" --window-size=1500,950
-) else (
-  echo   Chrome/Edge not found - opening in the default browser instead.
-  start "" "%URL%"
+REM -- open the window ----------------------------------------------------------
+REM open-window.ps1 reads data\.token and opens an app-mode window with the
+REM tokenised URL, so the shared-token auth works without typing anything.
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\open-window.ps1" -Root "%~dp0" -Port %PORT%
+if errorlevel 1 (
+  echo.
+  echo   Failed to open the window. Open the URL manually.
+  pause
+  exit /b 1
 )
 
 exit /b 0

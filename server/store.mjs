@@ -1,22 +1,23 @@
 /**
- * 指挥室持久化存储。
+ * 指挥室持久化存储（内存状态 + 分房间落盘）。
  *
- * 单一 JSON 文件 + 内存缓存：数据量很小（几个房间、几百条消息），不需要数据库。
- * 写入用"临时文件 + 原子改名"，避免进程被杀时留下半个文件。
+ * 内存里保持完整状态（几个房间、几千条消息，完全放得下），落盘交给
+ * storage.mjs：按房间 journal 追加写，维护时压成 snapshot。老版本的单文件
+ * store.json 会在首次启动时自动迁移。
  */
-import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { randomUUID } from "node:crypto";
 
 import { config } from "./config.mjs";
 import { agents } from "./agents.mjs";
 import { applyRoomRetention, pruneOrphanTemps, roomFootprint, rotateLog } from "./retention.mjs";
+import { createStorage } from "./storage.mjs";
 
-const STORE_PATH = resolve(config.dataDir, "store.json");
-const STORE_VERSION = 1;
+const STORE_PATH = resolve(config.dataDir, "store.json"); // 仅用于兼容旧脚本的提示
+const storage = createStorage(config.dataDir);
 
 /** 默认房间：一个全员群聊 + 每位成员一个私人频道。 */
-function defaultStore() {
+function defaultRooms() {
   const now = new Date().toISOString();
   const rooms = [
     {
@@ -38,84 +39,101 @@ function defaultStore() {
       sessions: {},
     })),
   ];
-  return { version: STORE_VERSION, rooms, order: rooms.map((room) => room.id) };
+  return { rooms, order: rooms.map((room) => room.id) };
 }
 
 let state = null;
-let flushTimer = null;
-let dirty = false;
+let metaTimer = null;
+let metaDirty = false;
 
 function load() {
-  if (!existsSync(STORE_PATH)) {
-    state = defaultStore();
-    return;
-  }
-  try {
-    const parsed = JSON.parse(readFileSync(STORE_PATH, "utf8"));
-    state = migrate(parsed);
-  } catch (error) {
-    // 存档损坏时不静默丢弃：改名保留现场，然后从默认状态重新开始。
-    const broken = `${STORE_PATH}.broken-${Date.now()}`;
-    try {
-      renameSync(STORE_PATH, broken);
-      console.error(`[store] store.json 解析失败，已备份到 ${broken}：${error.message}`);
-    } catch {
-      console.error(`[store] store.json 解析失败且备份失败：${error.message}`);
-    }
-    state = defaultStore();
-  }
+  const base = defaultRooms();
+  const loaded = storage.load({
+    version: 2,
+    order: base.order,
+    rooms: base.rooms,
+    profileSignatures: {},
+    migratedFrom: null,
+  });
+  state = migrate(loaded, base);
 }
 
-/** 补齐缺失的房间与成员，使旧存档能跟上名册变化。 */
-function migrate(parsed) {
-  const base = defaultStore();
-  const rooms = Array.isArray(parsed?.rooms) ? parsed.rooms : [];
-  const byId = new Map(rooms.map((room) => [room.id, room]));
+/**
+ * 补齐缺失的房间与成员，使旧存档/名册变化后仍能启动。
+ * 名册是成员列表的唯一来源：旧存档不能擅自增删成员。
+ */
+function migrate(loaded, base) {
+  const byId = new Map((loaded.rooms ?? []).map((room) => [room.id, room]));
+  const merged = [];
 
-  const merged = base.rooms.map((fresh) => {
+  for (const fresh of base.rooms) {
     const old = byId.get(fresh.id);
-    if (!old) return fresh;
+    if (!old) {
+      merged.push(fresh);
+      continue;
+    }
     byId.delete(fresh.id);
-    return {
+    merged.push({
       ...fresh,
       ...old,
-      // 名册是成员列表的唯一来源，旧存档不能擅自增删成员。
       members: fresh.members,
       messages: Array.isArray(old.messages) ? old.messages : [],
       sessions: old.sessions && typeof old.sessions === "object" ? old.sessions : {},
-    };
-  });
+    });
+  }
 
-  // 保留用户自建的自定义房间。
+  // 保留用户自建/自定义房间（成员非空的）。
   for (const leftover of byId.values()) {
     if (Array.isArray(leftover?.members) && leftover.members.length > 0) merged.push(leftover);
   }
 
-  const order = Array.isArray(parsed?.order) ? parsed.order.filter((id) => merged.some((r) => r.id === id)) : [];
+  const order = (loaded.order ?? []).filter((id) => merged.some((room) => room.id === id));
   for (const room of merged) if (!order.includes(room.id)) order.push(room.id);
 
-  return { version: STORE_VERSION, rooms: merged, order };
+  return {
+    version: 2,
+    rooms: merged,
+    order,
+    profileSignatures: loaded.profileSignatures ?? {},
+  };
 }
 
-function flush() {
-  if (!dirty || !state) return;
-  dirty = false;
-  mkdirSync(config.dataDir, { recursive: true });
-  const temp = `${STORE_PATH}.${randomUUID().slice(0, 8)}.tmp`;
-  writeFileSync(temp, JSON.stringify(state, null, 2), "utf8");
-  renameSync(temp, STORE_PATH);
+/** 房间目录（meta.json）落盘：只含房间元信息，不含消息。 */
+function saveMeta() {
+  if (!state) return;
+  const meta = {
+    version: 2,
+    order: state.order,
+    rooms: {},
+    profileSignatures: state.profileSignatures ?? {},
+  };
+  for (const room of state.rooms) {
+    meta.rooms[room.id] = {
+      id: room.id,
+      kind: room.kind,
+      title: room.title,
+      members: room.members,
+      createdAt: room.createdAt,
+    };
+  }
+  storage.saveMeta(meta);
 }
 
-/** 标记有改动，稍后落盘（合并短时间内的多次写入）。 */
+/** 标记房间元信息有改动，稍后合并落盘（消息本身走 journal，不受影响）。 */
 export function touch() {
-  dirty = true;
-  if (flushTimer) return;
-  flushTimer = setTimeout(() => {
-    flushTimer = null;
-    flush();
+  metaDirty = true;
+  if (metaTimer) return;
+  metaTimer = setTimeout(() => {
+    metaTimer = null;
+    if (!metaDirty) return;
+    metaDirty = false;
+    try {
+      saveMeta();
+    } catch (error) {
+      console.error(`[store] 保存房间目录失败：${error.message}`);
+    }
   }, 250);
-  // 落盘计时器不应让进程无法退出。
-  flushTimer.unref?.();
+  metaTimer.unref?.();
 }
 
 export function getState() {
@@ -125,27 +143,23 @@ export function getState() {
 
 // ══ 体量维护 ═══════════════════════════════════════════════════════════════
 //
-// 长期使用后 store.json 会不断变大（实测 194 条消息 → 2.5 MB，因为工具输出
-// 被完整存进 blocks）。这里定期做三件事：
-//   1. 清掉原子写入崩溃留下的 *.tmp（实测积累过 3.3 MB）
-//   2. 轮转过大的日志
-//   3. 把超期轮次「先归档、再降级成摘要」
+// 1. 清掉原子写入崩溃留下的 *.tmp
+// 2. 轮转日志
+// 3. 把超期轮次「先归档、再降级成摘要」，然后重写该房间快照
+// 4. 把过大的 journal 压成 snapshot
 
 let lastHousekeepingAt = 0;
 const HOUSEKEEPING_INTERVAL_MS = 5 * 60 * 1000;
 
 /**
- * 执行一次体量维护。
- *
  * @param {{force?: boolean}} [options] force=true 时忽略节流（启动时用）
- * @returns {Promise<object|null>} 报告；节流跳过时返回 null
  */
 export async function runHousekeeping({ force = false } = {}) {
   const now = Date.now();
   if (!force && now - lastHousekeepingAt < HOUSEKEEPING_INTERVAL_MS) return null;
   lastHousekeepingAt = now;
 
-  const report = { prunedTemps: [], rotated: false, rooms: [], error: null };
+  const report = { prunedTemps: [], rotated: false, rooms: [], compacted: [], error: null };
 
   try {
     report.prunedTemps = pruneOrphanTemps(config.dataDir);
@@ -160,9 +174,9 @@ export async function runHousekeeping({ force = false } = {}) {
     try {
       const before = roomFootprint(room.messages).chars;
       const result = await applyRoomRetention(room);
-      // 只有真的变小才算"维护过"——否则每次启动都会报一堆"已压缩 1 KB"的噪音。
       const after = roomFootprint(room.messages).chars;
       if (result.changed && (after < before || result.stubbed > 0)) {
+        storage.rewriteRoom(room);
         changed = true;
         report.rooms.push({
           roomId: room.id,
@@ -171,6 +185,8 @@ export async function runHousekeeping({ force = false } = {}) {
           charsAfter: after,
           archivePath: result.archivePath,
         });
+      } else if (storage.compactIfNeeded(room)) {
+        report.compacted.push(room.id);
       }
     } catch (error) {
       report.error = report.error ?? error.message;
@@ -183,13 +199,7 @@ export async function runHousekeeping({ force = false } = {}) {
 
 /**
  * 清扫"僵尸任务"：把仍标记为 working 的成员回话改成 interrupted。
- *
- * 为什么需要：成员回话先落库（状态 working），等 agent_end 事件到达才改成 done。
- * 如果服务进程在成员作业中途被杀（开发期最常见：排查时 Stop-Process），
- * 那个事件永远发不出来，于是消息状态永久冻结在 working——界面会一直显示
- * "作业中"，看起来像半个指挥室死了。重启时做一次清扫即可自愈。
- *
- * @returns {number} 被清扫的消息条数
+ * 进程被强杀时 agent_end 永远不会到达，界面会一直显示"作业中"。
  */
 export function sweepInterruptedTurns() {
   const snapshot = getState();
@@ -197,18 +207,25 @@ export function sweepInterruptedTurns() {
   let swept = 0;
 
   for (const room of snapshot.rooms) {
+    let roomChanged = false;
     for (const message of room.messages) {
       if (message.role !== "agent" || message.status !== "working") continue;
       message.status = "interrupted";
       message.error = message.error ?? "服务在成员作业中途重启，本次作业未能完成。";
       message.durationMs = message.durationMs ?? null;
       message.finishedAt = now;
+      storage.patchMessage(room.id, message.id, {
+        status: message.status,
+        error: message.error,
+        durationMs: message.durationMs,
+        finishedAt: now,
+      });
+      roomChanged = true;
       swept += 1;
     }
-    // 会话 id 保留：成员的历史仍然有效，下一轮可以续接。
+    if (roomChanged) storage.rewriteRoom(room);
   }
 
-  if (swept > 0) touch();
   return swept;
 }
 
@@ -218,16 +235,14 @@ export function getRoom(roomId) {
 
 export function listRooms() {
   const snapshot = getState();
-  return snapshot.order
-    .map((id) => snapshot.rooms.find((room) => room.id === id))
-    .filter(Boolean);
+  return snapshot.order.map((id) => snapshot.rooms.find((room) => room.id === id)).filter(Boolean);
 }
 
 export function appendMessage(roomId, message) {
   const room = getRoom(roomId);
   if (!room) throw new Error(`房间不存在：${roomId}`);
   room.messages.push(message);
-  touch();
+  storage.appendMessage(roomId, message);
   return message;
 }
 
@@ -237,11 +252,11 @@ export function patchMessage(roomId, messageId, patch) {
   const message = room.messages.find((item) => item.id === messageId);
   if (!message) return null;
   Object.assign(message, patch);
-  touch();
+  storage.patchMessage(roomId, messageId, patch);
   return message;
 }
 
-/** 取某成员在某房间的 DSH 会话 id，用于多轮续接。 */
+/** 取某成员在某房间的会话 id，用于多轮续接。 */
 export function getSession(roomId, agentId) {
   return getRoom(roomId)?.sessions?.[agentId] ?? null;
 }
@@ -251,19 +266,12 @@ export function setSession(roomId, agentId, sessionId) {
   if (!room) return;
   room.sessions ??= {};
   room.sessions[agentId] = sessionId;
-  touch();
+  storage.setSession(roomId, agentId, sessionId);
 }
 
 /**
  * 判断某成员的 profile 配置是否变化过；变化了就让它在所有房间里重新开始会话。
- *
- * 为什么需要：成员的 system prompt 在会话首次创建时就固化进历史了。之后我们
- * 改了人格或"运行环境事实"（比如权限模式），**已存在的会话不会自动更新**——
- * 它会带着旧提示继续回答，于是出现"配置改了它却仍按旧前提说话"这种怪象。
- *
- * @param {string} agentId
- * @param {string} signature 当前 profile 内容的指纹
- * @returns {boolean} 是否发生了变更（true 表示已清空该成员的会话）
+ * 原因：system prompt 在会话首次创建时就固化进历史，改人格不会自动生效。
  */
 export function resetSessionsIfProfileChanged(agentId, signature) {
   const snapshot = getState();
@@ -276,6 +284,7 @@ export function resetSessionsIfProfileChanged(agentId, signature) {
   for (const room of snapshot.rooms) {
     if (room.sessions && Object.hasOwn(room.sessions, agentId)) {
       delete room.sessions[agentId];
+      storage.setSession(room.id, agentId, null);
       cleared += 1;
     }
   }
@@ -286,15 +295,7 @@ export function resetSessionsIfProfileChanged(agentId, signature) {
 
 /**
  * 清空某成员在**所有房间**里的会话，让它下次开工时从零开始。
- *
- * 为什么需要：DSH 成员是靠 session 续接多轮的，历史越滚越长，每轮都要把旧上下文
- * 重新送进模型 —— 这是"用久了 token 消耗变大"的另一半原因（另一半是存储体量，
- * 由 retention.mjs 处理）。清掉会话等价于让它重新读一遍当前人格与运行环境。
- *
- * 代价：它不记得之前聊过什么。所以这是个手动动作，不做成自动触发。
- *
- * @param {string} agentId
- * @returns {number} 被清掉的会话数
+ * 这是手动动作：清完它就不记得之前聊过什么。
  */
 export function resetAgentSessions(agentId) {
   const snapshot = getState();
@@ -302,27 +303,28 @@ export function resetAgentSessions(agentId) {
   for (const room of snapshot.rooms) {
     if (room.sessions && Object.hasOwn(room.sessions, agentId)) {
       delete room.sessions[agentId];
+      storage.setSession(room.id, agentId, null);
       cleared += 1;
     }
   }
-  if (cleared > 0) touch();
   return cleared;
 }
 
 export function createRoom({ title, members, kind = "group" }) {
   const snapshot = getState();
+  const validMembers = members.filter((id) => agents().some((agent) => agent.id === id));
   const room = {
     id: `room-${randomUUID().slice(0, 8)}`,
     kind,
     title: title?.trim() || "新频道",
-    members: members.filter((id) => agents().some((agent) => agent.id === id)),
+    members: validMembers.length > 0 ? validMembers : agents().slice(0, 1).map((agent) => agent.id),
     createdAt: new Date().toISOString(),
     messages: [],
     sessions: {},
   };
-  if (room.members.length === 0) room.members = [agents()[0].id];
   snapshot.rooms.push(room);
   snapshot.order.push(room.id);
+  storage.rewriteRoom(room);
   touch();
   return room;
 }
@@ -334,17 +336,71 @@ export function deleteRoom(roomId) {
   if (!room || (room.kind === "private" && room.id.startsWith("dm-")) || room.id === "group") return false;
   snapshot.rooms = snapshot.rooms.filter((item) => item.id !== roomId);
   snapshot.order = snapshot.order.filter((id) => id !== roomId);
+  storage.removeRoom(roomId);
   touch();
   return true;
 }
 
-/** 进程退出前强制落盘。 */
+/** 进程退出前强制落盘：压快照 + 清 journal + 存 meta。 */
 export function flushNow() {
-  if (flushTimer) {
-    clearTimeout(flushTimer);
-    flushTimer = null;
+  if (metaTimer) {
+    clearTimeout(metaTimer);
+    metaTimer = null;
   }
-  flush();
+  if (!state) return;
+  try {
+    storage.flushAll(state.rooms);
+    saveMeta();
+  } catch (error) {
+    console.error(`[store] 退出前保存失败：${error.message}`);
+  }
+}
+
+/** 存储层句柄（测试/统计用）。 */
+export function storageInfo() {
+  if (!state) return { rooms: 0, journalBytes: 0 };
+  const journalBytes = state.rooms.reduce((sum, room) => sum + storage.journalSize(room.id), 0);
+  return { rooms: state.rooms.length, journalBytes };
 }
 
 export { STORE_PATH };
+
+/**
+ * 成员被删除后的房间清理：把它从所有房间移除，并删掉因此变空的房间。
+ *
+ * 为什么需要：每位成员创建时都会有一个私人频道（dm-<id>）。成员删了但频道
+ * 留着，侧栏就会出现一堆指向已删成员的"暂无对话"死房间。
+ *
+ * @param {string} agentId
+ * @returns {{removedRooms: string[], touchedRooms: string[]}}
+ */
+export function removeMemberFromRooms(agentId) {
+  const snapshot = getState();
+  const removedRooms = [];
+  const touchedRooms = [];
+
+  for (const room of [...snapshot.rooms]) {
+    if (!room.members?.includes(agentId) && room.id !== `dm-${agentId}`) continue;
+    room.members = (room.members ?? []).filter((id) => id !== agentId);
+    if (room.sessions && Object.hasOwn(room.sessions, agentId)) {
+      delete room.sessions[agentId];
+      storage.setSession(room.id, agentId, null);
+    }
+    // 私人频道随成员一起消失；其它房间只有在空掉时才删（群聊永不删）。
+    const isDm = room.id === `dm-${agentId}`;
+    if (isDm || (room.members.length === 0 && room.id !== "group")) {
+      removedRooms.push(room.id);
+      continue;
+    }
+    touchedRooms.push(room.id);
+    storage.rewriteRoom(room);
+  }
+
+  if (removedRooms.length > 0) {
+    snapshot.rooms = snapshot.rooms.filter((room) => !removedRooms.includes(room.id));
+    snapshot.order = snapshot.order.filter((id) => !removedRooms.includes(id));
+    for (const roomId of removedRooms) storage.removeRoom(roomId);
+  }
+  touch();
+  return { removedRooms, touchedRooms };
+}

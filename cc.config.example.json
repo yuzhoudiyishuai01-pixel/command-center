@@ -1,0 +1,82 @@
+{
+  "$comment": [
+    "Copy this file to cc.config.json and edit it.",
+    "Every field is optional: missing values fall back to safe defaults, so you can",
+    "also run with no config file at all and configure everything from the UI.",
+    "Environment variables override this file (see README: Configuration).",
+    "Relative paths are resolved against the project root."
+  ],
+
+  "host": "127.0.0.1",
+  "port": 8787,
+
+  "$comment_workspace": [
+    "The directory agents are told to work in (their cwd).",
+    "Use an absolute path, or leave it out to default to the process cwd."
+  ],
+  "workspace": "",
+
+  "$comment_auth": [
+    "A shared token is generated on first run into data/.token and printed at startup.",
+    "Open http://host:port/?token=<token> once; the browser keeps a cookie afterwards.",
+    "Set CC_TOKEN to pin your own token, or set auth=false ONLY on a trusted machine."
+  ],
+  "auth": true,
+  "token": "",
+
+  "$comment_permissionMode": [
+    "Sandbox mode handed to DSH member processes.",
+    "danger-full-access = full permissions (shell, full-text search, writes outside workspace).",
+    "workspace-write   = members may only write inside the workspace; shell/search fail.",
+    "This only affects agents launched by the command center, not your own DSH session."
+  ],
+  "permissionMode": "danger-full-access",
+  "defaultModel": "deepseek-flash",
+
+  "$comment_dsh": [
+    "DeepSeek Harness CLI (optional). Leave empty to auto-detect from PATH;",
+    "if it is not installed, CLI-based DSH members are simply unavailable and",
+    "API-based members keep working. Set dshCli to a .cmd/.bat on Windows or a",
+    "shell script on macOS/Linux and the launcher will figure out the real binary."
+  ],
+  "dshHome": "",
+  "dshCli": "",
+  "dshExecutable": "",
+  "dshCliJs": "",
+  "credentialsSource": "",
+
+  "$comment_backends": [
+    "Optional parameters per CLI backend. Paths are auto-detected when empty.",
+    "claudeUseProxy: true when talking to the official Anthropic endpoint, false for",
+    "  regional Anthropic-compatible endpoints (DeepSeek/GLM/Kimi).",
+    "claudeEnv: extra environment variables for the Claude CLI.",
+    "API keys never go here: they live in secrets.json (gitignored) or data/.",
+    "concurrency: how many turns may run at the same time (global), see queue.mjs."
+  ],
+  "backends": {
+    "proxy": "",
+    "claudeUseProxy": false,
+    "claudeEnv": {},
+    "claudeCliPath": "",
+    "claudeModel": "",
+    "claudePermissionMode": "bypassPermissions",
+    "codexUseProxy": false,
+    "codexEnv": {},
+    "codexCliPath": "",
+    "codexModel": "",
+    "codexBypassSandbox": true,
+    "codexSandbox": "workspace-write"
+  },
+
+  "$comment_limits": [
+    "turnTimeoutMs: hard timeout per member turn (default 30 min).",
+    "maxConcurrentTurns: global cap for parallel member turns (default 4).",
+    "perMemberQueue: one turn at a time per member (default true).",
+    "historyCharBudget: how many characters of an agent's own past replies are",
+    "  replayed into its API prompt (default 24000)."
+  ],
+  "turnTimeoutMs": 1800000,
+  "maxConcurrentTurns": 4,
+  "perMemberQueue": true,
+  "historyCharBudget": 24000
+}

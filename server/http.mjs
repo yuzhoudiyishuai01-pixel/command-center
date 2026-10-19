@@ -17,17 +17,21 @@ import { createServer } from "node:http";
 import { readFile, stat } from "node:fs/promises";
 import { extname, join, normalize, resolve } from "node:path";
 
-import { config } from "./config.mjs";
+import { config, startupWarnings } from "./config.mjs";
 import { agents, CAPABILITY_LABELS } from "./agents.mjs";
 import { BACKEND_KINDS, createMember, deleteMember, updateMember } from "./members.mjs";
 import { hasApiKey } from "./api-backend.mjs";
 import { backendNameFor } from "./backends.mjs";
 import { publicCapabilities } from "./capabilities.mjs";
 import { backendAvailability, BACKEND_LABELS } from "./dispatcher.mjs";
-import { createRoom, deleteRoom, flushNow, getRoom, getState, listRooms, resetAgentSessions, touch } from "./store.mjs";
+import { createRoom, deleteRoom, flushNow, getRoom, getState, listRooms, removeMemberFromRooms, resetAgentSessions, storageInfo, touch } from "./store.mjs";
 import { pageBefore, recentWindow, roomFootprint, compactMessage } from "./retention.mjs";
 import { handleCommanderMessage } from "./orchestrator.mjs";
 import { persistApiKey, removeApiKey } from "./secrets-store.mjs";
+import { cookieFor, extractToken, isAuthorized, shouldBootstrapCookie, tokenizedUrl } from "./auth.mjs";
+import { logEvent, statsSnapshot } from "./metrics.mjs";
+import { turnQueue } from "./queue.mjs";
+import { searchMessages } from "./search.mjs";
 
 const MIME = {
   ".html": "text/html; charset=utf-8",
@@ -41,8 +45,27 @@ const MIME = {
 };
 
 // ── 事件总线 ────────────────────────────────────────────────────────────────
-/** roomId -> Set<订阅者>；每个订阅者是一个 (event) => void。 */
+/** roomId -> Set<订阅者>；每个订阅者是一个 (event, id) => void。 */
 const listeners = new Map();
+
+/**
+ * 每个房间的最近事件环形缓冲，用于断线重连时补发。
+ *
+ * SSE 自带 Last-Event-ID 机制：断线重连时浏览器会把最后收到的事件 id 带回来，
+ * 我们把 id 更大的事件重放一遍。没有这一步，断网期间的过程事件（思考、工具
+ * 调用）会永久丢失，只剩最终正文。
+ */
+const EVENT_BUFFER_SIZE = 400;
+const eventBuffers = new Map(); // roomId -> { nextId, items: [{ id, event }] }
+
+function bufferFor(roomId) {
+  let buffer = eventBuffers.get(roomId);
+  if (!buffer) {
+    buffer = { nextId: 1, items: [] };
+    eventBuffers.set(roomId, buffer);
+  }
+  return buffer;
+}
 
 function subscribe(roomId, listener) {
   if (!listeners.has(roomId)) listeners.set(roomId, new Set());
@@ -53,16 +76,32 @@ function subscribe(roomId, listener) {
   };
 }
 
+/** 返回分配的 event id，方便 SSE 用 `id:` 行标注。 */
 function publish(roomId, event) {
+  const buffer = bufferFor(roomId);
+  const id = buffer.nextId;
+  buffer.nextId += 1;
+  buffer.items.push({ id, event });
+  if (buffer.items.length > EVENT_BUFFER_SIZE) {
+    buffer.items.splice(0, buffer.items.length - EVENT_BUFFER_SIZE);
+  }
   const set = listeners.get(roomId);
-  if (!set) return;
+  if (!set) return id;
   for (const listener of set) {
     try {
-      listener(event);
+      listener(event, id);
     } catch {
       /* 单个订阅者出错不应影响其他订阅者 */
     }
   }
+  return id;
+}
+
+/** 重连补发：返回 id 之后的事件。 */
+function eventsAfter(roomId, lastEventId) {
+  if (!lastEventId) return [];
+  const buffer = bufferFor(roomId);
+  return buffer.items.filter((item) => item.id > lastEventId);
 }
 
 // ── 正在运行的回合 ──────────────────────────────────────────────────────────
@@ -113,7 +152,7 @@ function publicAgents() {
       backendReason: availability.reason,
       // 界面据此决定是否显示"能动手"的徽标
       toolCapable: Boolean(kind?.toolCapable),
-      builtin: Boolean(agent.builtin),
+      seed: Boolean(agent.seed),
       // API 成员的连接摘要（不含密钥）
       api: agent.api ? { baseUrl: agent.api.baseUrl, model: agent.api.model } : null,
       hasApiKey: agent.api ? hasApiKey(agent) : null,
@@ -204,7 +243,39 @@ async function handleApi(req, res, url) {
         : null,
       workspace: config.workspace,
       permissionMode: config.permissionMode,
+      // 运行态摘要：界面底部/统计面板用，也给脚本做健康检查。
+      queue: turnQueue().snapshot(),
+      storage: storageInfo(),
+      // 让界面知道"哪些能力此刻不可用"（例如没装 dsh CLI）。
+      warnings: startupWarnings(),
     });
+    return true;
+  }
+
+  // GET /api/stats —— 观测数据（作业数、失败率、耗时、token 用量、队列）
+  if (req.method === "GET" && segments[1] === "stats" && segments.length === 2) {
+    sendJson(
+      res,
+      200,
+      statsSnapshot({
+        queue: turnQueue().snapshot(),
+        runningRooms: [...running.keys()],
+        storage: storageInfo(),
+      }),
+    );
+    return true;
+  }
+
+  // GET /api/search?q=<关键词>&room=<id>&limit=30 —— 跨房间检索历史
+  if (req.method === "GET" && segments[1] === "search" && segments.length === 2) {
+    const query = (url.searchParams.get("q") ?? "").trim();
+    if (query.length === 0) {
+      sendJson(res, 400, { error: "缺少查询词 q" });
+      return true;
+    }
+    const limit = Math.max(1, Math.min(100, Number(url.searchParams.get("limit")) || 30));
+    const roomId = url.searchParams.get("room") || null;
+    sendJson(res, 200, searchMessages(query, { roomId, limit }));
     return true;
   }
 
@@ -239,8 +310,19 @@ async function handleApi(req, res, url) {
     res.write(`retry: 2000\n\n`);
     res.write(`data: ${JSON.stringify({ type: "hello", roomId })}\n\n`);
 
-    const unsubscribe = subscribe(roomId, (event) => {
-      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    // 断线重连：浏览器把最后收到的事件 id 放在 Last-Event-ID 里（也支持 query
+    // 参数，方便非浏览器客户端）。
+    const headerId = Number(req.headers["last-event-id"]);
+    const queryId = Number(url.searchParams.get("lastEventId"));
+    const lastEventId = Number.isFinite(headerId) && headerId > 0 ? headerId : Number.isFinite(queryId) && queryId > 0 ? queryId : 0;
+    if (lastEventId > 0) {
+      for (const item of eventsAfter(roomId, lastEventId)) {
+        res.write(`id: ${item.id}\ndata: ${JSON.stringify(item.event)}\n\n`);
+      }
+    }
+
+    const unsubscribe = subscribe(roomId, (event, id) => {
+      res.write(`id: ${id}\ndata: ${JSON.stringify(event)}\n\n`);
     });
     // 心跳：防止中间层因空闲而断开长连接。
     const heartbeat = setInterval(() => {
@@ -385,7 +467,22 @@ async function handleApi(req, res, url) {
     return true;
   }
 
-  // PATCH /api/members/:id —— 修改自定义成员
+  // GET /api/members/:id/persona —— 编辑成员时按需取人格正文
+  //
+  // 为什么不放进 /api/state：人格是提示词，不该在每次页面加载时全量下发浏览器。
+  // 只在用户点"编辑"时取一次。
+  if (req.method === "GET" && segments[1] === "members" && segments[3] === "persona") {
+    const id = decodeURIComponent(segments[2]);
+    const member = agents().find((item) => item.id === id);
+    if (!member) {
+      sendJson(res, 404, { error: "成员不存在" });
+      return true;
+    }
+    sendJson(res, 200, { id, persona: member.persona ?? "" });
+    return true;
+  }
+
+  // PATCH /api/members/:id —— 修改成员（任何成员都可改，包括种子成员）
   if (req.method === "PATCH" && segments[1] === "members" && segments.length === 3) {
     const id = decodeURIComponent(segments[2]);
     let body;
@@ -405,7 +502,7 @@ async function handleApi(req, res, url) {
     return true;
   }
 
-  // DELETE /api/members/:id —— 删除自定义成员
+  // DELETE /api/members/:id —— 删除成员（任何成员都可删）
   if (req.method === "DELETE" && segments[1] === "members" && segments.length === 3) {
     const id = decodeURIComponent(segments[2]);
     const result = deleteMember(id);
@@ -420,13 +517,8 @@ async function handleApi(req, res, url) {
       /* 密钥清理失败不该阻止删除成员，但要留痕 */
       console.error(`[members] 删除 ${id} 的密钥失败`);
     }
-    // 从所有房间里移除该成员，避免留下指向已删成员的悬空 id
-    const snapshot = getState();
-    for (const room of snapshot.rooms) {
-      room.members = room.members.filter((memberId) => memberId !== id);
-      if (room.sessions && Object.hasOwn(room.sessions, id)) delete room.sessions[id];
-    }
-    touch();
+    // 从所有房间移除该成员；它自己的私人频道也一并删掉（否则侧栏留死房间）。
+    const cleanup = removeMemberFromRooms(id);
     sendJson(res, 200, { removed: id });
     return true;
   }
@@ -517,6 +609,40 @@ async function handleApi(req, res, url) {
 export function startServer() {
   const server = createServer((req, res) => {
     const url = new URL(req.url ?? "/", `http://${req.headers.host ?? "localhost"}`);
+
+    // 1) 带 ?token= 的首次访问：种 cookie，然后把明文 token 从地址栏去掉。
+    if (shouldBootstrapCookie(req, url)) {
+      const token = extractToken(req, url);
+      url.searchParams.delete("token");
+      const location = `${url.pathname}${url.search}`;
+      res.writeHead(302, { "set-cookie": cookieFor(token), location });
+      res.end();
+      return;
+    }
+
+    // 2) 其余请求都要过鉴权（静态资源也拦，避免未授权时界面被打开）。
+    if (!isAuthorized(req, url)) {
+      if (url.pathname.startsWith("/api/")) {
+        sendJson(res, 401, {
+          error: "未授权：需要访问 token",
+          hint: "打开启动横幅里打印的带 ?token= 的网址，或设置 Authorization: Bearer <token>。",
+        });
+      } else {
+        res.writeHead(401, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        res.end(
+          [
+            "<!doctype html><meta charset='utf-8'><title>需要访问 token</title>",
+            "<body style='background:#0b0417;color:#e8defa;font:16px/1.7 system-ui;padding:12vh 8vw'>",
+            "<h1 style='color:#ff2ea6'>需要访问 token</h1>",
+            "<p>指挥室默认启用共享 token 鉴权。请使用启动横幅里打印的网址（带 <code>?token=...</code>）。</p>",
+            "<p>token 保存在 <code>data/.token</code>，也可以用环境变量 <code>CC_TOKEN</code> 指定。</p>",
+            "</body>",
+          ].join("\n"),
+        );
+      }
+      return;
+    }
+
     if (url.pathname.startsWith("/api/")) {
       handleApi(req, res, url)
         .then((handled) => {
@@ -524,6 +650,7 @@ export function startServer() {
         })
         .catch((error) => {
           console.error("[server] API 处理失败：", error);
+          logEvent("api_error", { path: url.pathname, error: error.message });
           if (!res.headersSent) sendJson(res, 500, { error: error.message });
           else res.end();
         });

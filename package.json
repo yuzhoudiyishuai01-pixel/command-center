@@ -1,0 +1,43 @@
+{
+  "name": "command-center",
+  "version": "0.2.0",
+  "description": "A local, zero-dependency chat room where you dispatch work to CLI and API AI agents (DSH, Claude Code, Codex, OpenAI/Anthropic-compatible endpoints).",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "bin": {
+    "command-center": "./bin/command-center.mjs"
+  },
+  "scripts": {
+    "start": "node bin/command-center.mjs",
+    "start:nologin": "node bin/command-center.mjs --no-open",
+    "serve": "node server/index.mjs",
+    "test": "node scripts/test-all.mjs",
+    "test:selfcheck": "node scripts/selfcheck.mjs",
+    "test:store": "node scripts/test-store.mjs",
+    "test:retention": "node scripts/test-retention.mjs",
+    "test:members": "node scripts/test-member-flow.mjs",
+    "test:auth": "node scripts/test-auth.mjs",
+    "check": "node scripts/check-syntax.mjs"
+  },
+  "keywords": [
+    "ai-agents",
+    "multi-agent",
+    "chat",
+    "claude-code",
+    "codex",
+    "deepseek-harness",
+    "self-hosted"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/your-name/command-center.git"
+  },
+  "bugs": {
+    "url": "https://github.com/your-name/command-center/issues"
+  },
+  "homepage": "https://github.com/your-name/command-center#readme"
+}

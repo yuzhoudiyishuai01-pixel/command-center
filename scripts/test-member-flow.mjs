@@ -10,6 +10,18 @@
  * 用法：node scripts/test-member-flow.mjs
  */
 const BASE = process.env.CC_BASE ?? "http://127.0.0.1:8787";
+// 服务默认启用共享 token 鉴权；测试可传 CC_TOKEN（或从 data/.token 读）。
+import { readFileSync as readTokenFile } from "node:fs";
+const TOKEN =
+  process.env.CC_TOKEN ??
+  (() => {
+    try {
+      return readTokenFile(new URL("../data/.token", import.meta.url), "utf8").trim();
+    } catch {
+      return "";
+    }
+  })();
+const AUTH = TOKEN ? { authorization: `Bearer ${TOKEN}` } : {};
 
 const log = (icon, text) => console.log(`  ${icon} ${text}`);
 const fail = (message) => {
@@ -19,7 +31,7 @@ const fail = (message) => {
 
 async function api(path, options = {}) {
   const response = await fetch(`${BASE}${path}`, {
-    headers: { "content-type": "application/json" },
+    headers: { "content-type": "application/json", ...AUTH },
     ...options,
   });
   const body = await response.json().catch(() => ({}));
@@ -33,7 +45,7 @@ console.log(`\n成员全流程测试 · ${BASE}\n`);
 {
   const state = await api("/api/state");
   const leftovers = (state.body.agents ?? []).filter(
-    (agent) => agent.name?.startsWith("测试员") && agent.builtin === false,
+    (agent) => agent.name?.startsWith("测试员"),
   );
   for (const leftover of leftovers) {
     await api(`/api/members/${encodeURIComponent(leftover.id)}`, { method: "DELETE" });
@@ -180,12 +192,13 @@ if (final.body.agents.length !== beforeMembers) {
 if (final.body.agents.some((a) => a.id === memberId)) fail("删除后成员仍在列表里");
 log("✓", `成员数已恢复（${final.body.agents.length} 位）`);
 
-// ── 5. 校验内置成员不可删 ──────────────────────────────────────────────────
-const protectedDelete = await api("/api/members/deepseek", { method: "DELETE" });
-if (protectedDelete.ok) fail("内置成员竟然被删掉了——这是个严重问题");
-log("✓", `内置成员受保护（拒绝删除：${protectedDelete.body.error}）`);
+// ── 5. 校验种子成员可删（开源版：成员完全归用户所有）────────────────────────
+// 不真的删用户的成员：只验证 HTTP 语义——删一个不存在的成员应返回 400。
+const missingDelete = await api("/api/members/definitely-not-a-member", { method: "DELETE" });
+if (missingDelete.ok) fail("删除不存在的成员竟然成功了");
+log("✓", "删除不存在的成员被正确拒绝（任何成员都可删除，不再有内置特权）");
 
 // 清理测试产生的私人频道
 await api(`/api/rooms/${dmId}`, { method: "DELETE" }).catch(() => {});
 
-console.log("\n✓ 全流程通过：新建 → 拉群 → 派活 → 失败可读 → 移出 → 删除 → 内置受保护\n");
+console.log("\n✓ 全流程通过：新建 → 拉群 → 派活 → 失败可读 → 移出 → 删除 → 删除语义\n");

@@ -24,3 +24,6 @@ npm-debug.log*
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# 本机运行时配置（含绝对路径/代理/个人偏好），仓库里只放 cc.config.example.json
+cc.config.json

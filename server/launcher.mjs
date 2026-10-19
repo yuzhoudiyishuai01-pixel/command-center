@@ -35,10 +35,21 @@ const usable = (path) => typeof path === "string" && path.length > 0 && existsSy
 const asarPathOk = (path) => typeof path === "string" && path.trim().length > 0;
 
 /**
- * @returns {{command: string, prefixArgs: string[], env: Record<string,string>, how: string}}
+ * @returns {{command: string, prefixArgs: string[], env: Record<string,string>, how: string, available: boolean}}
  */
 export function resolveLauncher() {
   const cli = config.dshCli;
+
+  // 0) 没有 DSH CLI：不是错误。API 成员照样能用，只是 DSH 成员不可用。
+  if (!cli) {
+    return {
+      command: "",
+      prefixArgs: [],
+      env: {},
+      how: "未配置（DSH 成员不可用）",
+      available: false,
+    };
+  }
 
   // 1) 完全显式配置：启动器 + CLI 脚本都给了。
   if (usable(config.dshExecutable)) {
@@ -48,6 +59,7 @@ export function resolveLauncher() {
       prefixArgs,
       env: prefixArgs.length > 0 ? { ELECTRON_RUN_AS_NODE: "1" } : {},
       how: "cc.config.json 显式指定",
+      available: true,
     };
   }
 
@@ -67,6 +79,7 @@ export function resolveLauncher() {
           prefixArgs: [js],
           env: { ELECTRON_RUN_AS_NODE: "1" },
           how: "从 dsh.cmd 内容解析",
+          available: true,
         };
       }
     } catch {
@@ -94,6 +107,7 @@ export function resolveLauncher() {
           prefixArgs: [cliJs],
           env: { ELECTRON_RUN_AS_NODE: "1" },
           how: `从 dshCli 向上 ${depth} 级定位启动器`,
+          available: true,
         };
       }
       const parent = dirname(dir);
@@ -103,14 +117,37 @@ export function resolveLauncher() {
   }
 
   // 4) 非 Windows，或推导失败：直接按原路径执行。
-  return { command: cli, prefixArgs: [], env: {}, how: "原路径直接执行" };
+  const directPath = /\.(cmd|bat)$/i.test(cli) && process.platform === "win32" ? null : cli;
+  if (directPath) {
+    return { command: directPath, prefixArgs: [], env: {}, how: "原路径直接执行", available: true };
+  }
+  return {
+    command: "",
+    prefixArgs: [],
+    env: {},
+    how: "无法解析 dsh 启动器（Windows 上 .cmd 不能直接执行）",
+    available: false,
+  };
 }
 
 /** 启动前自检：把不可用的启动配置变成清晰的报错，而不是运行时的 EINVAL/EPERM。 */
 export function launcherProblems() {
   const problems = [];
-  const launcher = resolveLauncher();
+  // 没有配置 DSH CLI 不算问题——用户可能只用 API 成员。
+  if (!config.dshCli) return problems;
 
+  const launcher = resolveLauncher();
+  if (!launcher.available) {
+    problems.push(
+      [
+        `无法启动 DSH 成员进程：${launcher.how}`,
+        `  dshCli = ${config.dshCli}`,
+        "  请检查 dshCli 是否指向 DeepSeek Harness 自带的 dsh 命令行入口，",
+        "  或在 cc.config.json 里显式填写 dshExecutable 与 dshCliJs。",
+      ].join("\n"),
+    );
+    return problems;
+  }
   if (!existsSync(launcher.command)) {
     problems.push(`成员进程的启动器不存在：${launcher.command}`);
     return problems;
@@ -128,3 +165,4 @@ export function launcherProblems() {
   // 因此这里刻意不做存在性校验（详见 asarPathOk 的说明）。
   return problems;
 }
+
