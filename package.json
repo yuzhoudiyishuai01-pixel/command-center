@@ -51,10 +51,12 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-name/command-center.git"
+    "url": "git+https://github.com/你的用户名/command-center.git"
   },
   "bugs": {
-    "url": "https://github.com/your-name/command-center/issues"
+    "url": "https://github.com/你的用户名/command-center/issues"
   },
-  "homepage": "https://github.com/your-name/command-center#readme"
+  "homepage": "https://github.com/你的用户名/command-center#readme"
 }
+
+
