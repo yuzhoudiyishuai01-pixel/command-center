@@ -1,6 +1,6 @@
 {
   "name": "command-center",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "A local, zero-dependency chat room where you dispatch work to CLI and API AI agents (DSH, Claude Code, Codex, OpenAI/Anthropic-compatible endpoints).",
   "license": "MIT",
   "private": true,
