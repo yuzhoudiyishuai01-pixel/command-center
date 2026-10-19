@@ -111,6 +111,18 @@ if (options.data) process.env.CC_DATA_DIR = String(resolve(options.data));
 const { config } = await import("../server/config.mjs");
 const { ensureToken, tokenizedUrl } = await import("../server/auth.mjs");
 
+// 端口上已经有服务（比如开机自启的那个）就别再起一个：直接打开界面。
+// 否则子进程会 EADDRINUSE，而外层因为端口是通的会误报"启动成功"。
+const alreadyRunning = await waitForPort(config.host, config.port, 800);
+if (alreadyRunning) {
+  const existingUrl = config.auth
+    ? tokenizedUrl(config.host, config.port)
+    : `http://${config.host}:${config.port}/`;
+  console.log(`\n  指挥室已经在运行：${existingUrl}\n`);
+  if (options.open) openBrowser(existingUrl);
+  process.exit(0);
+}
+
 const child = spawn(process.execPath, [resolve(ROOT, "server", "index.mjs")], {
   cwd: ROOT,
   env: process.env,
