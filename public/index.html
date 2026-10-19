@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#05020c" />
+    <title>指挥室 · COMMAND CENTER</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <!-- 同一套图标的位图版本：Chrome/Edge 的 app 窗口、Windows 任务栏、
+         以及不支持 SVG favicon 的场景会退回它 -->
+    <link rel="alternate icon" href="/icon.ico" sizes="48x48" />
+    <link rel="apple-touch-icon" href="/icon.png" />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <!-- ── 赛博背景层 ─────────────────────────────────────────────────────
+         1) canvas：实时绘制的等离子雾 + 数据流 + 透视网格（bg.js）
+         2) 静态层：扫描线、暗角、颗粒——让画面有 CRT 的质感而不只是渐变
+         全部 pointer-events: none，永不挡交互。 -->
+    <canvas class="bg-canvas" id="bg-canvas" aria-hidden="true"></canvas>
+    <div class="bg-scan" aria-hidden="true"></div>
+    <div class="bg-vignette" aria-hidden="true"></div>
+    <div class="bg-grain" aria-hidden="true"></div>
+    <div class="bg-sweep" aria-hidden="true"></div>
+
+    <div class="app">
+      <!-- ══ 左栏：频道与成员 ══════════════════════════════════════ -->
+      <aside class="sidebar">
+        <header class="brand">
+          <div class="brand-mark" aria-hidden="true">
+            <span></span><span></span><span></span>
+            <i></i>
+          </div>
+          <div class="brand-text">
+            <h1 data-text="指挥室">指挥室</h1>
+            <p>COMMAND&nbsp;CENTER</p>
+          </div>
+          <div class="brand-pulse" id="conn-pulse" title="连接状态"></div>
+        </header>
+
+        <section class="pane">
+          <div class="pane-head">
+            <h2>频道</h2>
+            <button class="ghost-btn" id="new-room-btn" type="button" title="新建频道">＋</button>
+          </div>
+          <nav class="room-list" id="room-list" aria-label="频道列表"></nav>
+        </section>
+
+        <section class="pane pane-members">
+          <div class="pane-head">
+            <h2>成员</h2>
+            <span class="pane-count" id="member-count">0</span>
+            <button class="ghost-btn" id="new-member-btn" type="button" title="新建成员（API 或 CLI 接入）">＋</button>
+          </div>
+          <ul class="member-list" id="member-list" aria-label="成员列表"></ul>
+        </section>
+
+        <footer class="sidebar-foot">
+          <dl class="telemetry">
+            <div><dt>工作区</dt><dd id="foot-workspace" title="">—</dd></div>
+            <div><dt>沙箱</dt><dd id="foot-sandbox">—</dd></div>
+            <div><dt>模型路由</dt><dd id="foot-route">DeepSeek 账号</dd></div>
+          </dl>
+        </footer>
+      </aside>
+
+      <!-- ══ 中栏：对话 ═══════════════════════════════════════════ -->
+      <main class="stage">
+        <header class="stage-head">
+          <div class="stage-title">
+            <h2 id="room-title">指挥部</h2>
+            <div class="stage-meta">
+              <span class="badge" id="room-kind">群聊</span>
+              <!-- 体量摘要：让"臃肿"可见，而不是只靠感觉变慢 -->
+              <span class="badge footprint" id="room-footprint" hidden></span>
+              <div class="avatar-stack" id="room-avatars"></div>
+            </div>
+          </div>
+          <div class="stage-actions">
+            <div class="workload" id="workload" hidden>
+              <span class="workload-dot"></span>
+              <span id="workload-text">待命</span>
+            </div>
+            <button class="ghost-btn" id="room-members-btn" type="button" title="管理本频道成员">成员</button>
+            <button class="ghost-btn danger" id="abort-btn" type="button" hidden>中止</button>
+          </div>
+        </header>
+
+        <div class="transcript" id="transcript" role="log" aria-live="polite"></div>
+
+        <!-- ══ 右栏：实时动态（窄屏时并入中栏上方） ═══════════════ -->
+        <section class="live" id="live-panel">
+          <div class="pane-head">
+            <h2>实时动态</h2>
+            <button class="ghost-btn" id="live-toggle" type="button" title="收起/展开">−</button>
+          </div>
+          <ol class="live-feed" id="live-feed"></ol>
+        </section>
+
+        <div class="composer-wrap">
+          <div class="mention-bar" id="mention-bar" hidden></div>
+          <form class="composer" id="composer" autocomplete="off">
+            <div class="composer-targets" id="composer-targets"></div>
+            <div class="composer-row">
+              <!-- autocomplete="new-password" 是为了抑制 Edge 的表单历史面板：
+                   它在深色输入框上会弹出一块白色建议框。autocomplete="off" 对 Edge 常常无效，
+                   new-password 是业界通用的强抑制写法。 -->
+              <textarea
+                id="input"
+                rows="1"
+                placeholder="下达指令…  用 @ 点名成员，不点名则全员开工"
+                aria-label="指令输入框"
+                autocomplete="new-password"
+                autocorrect="off"
+                autocapitalize="off"
+                spellcheck="false"
+              ></textarea>
+              <button class="send-btn" id="send-btn" type="submit" aria-label="派发指令">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="M3 11.5 21 3l-8.5 18-2.2-7.3L3 11.5Z" />
+                </svg>
+              </button>
+            </div>
+            <div class="composer-hint">
+              <span><kbd>Enter</kbd> 派发</span>
+              <span><kbd>Shift</kbd>+<kbd>Enter</kbd> 换行</span>
+              <span><kbd>@</kbd> 点名成员</span>
+            </div>
+          </form>
+        </div>
+      </main>
+    </div>
+
+    <!-- 新建频道对话框 -->
+    <dialog class="modal" id="new-room-dialog">
+      <form method="dialog" class="modal-inner" id="new-room-form">
+        <h3>新建频道</h3>
+        <label class="field">
+          <span>频道名称</span>
+          <input id="new-room-title" type="text" placeholder="例如：落地页攻坚" maxlength="24" />
+        </label>
+        <fieldset class="field">
+          <legend>选择成员（可多选；只选一位即为私人频道）</legend>
+          <div class="chip-grid" id="new-room-members"></div>
+        </fieldset>
+        <menu class="modal-actions">
+          <button value="cancel" class="ghost-btn" type="button" id="new-room-cancel">取消</button>
+          <button value="ok" class="primary-btn" type="submit">创建</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <!-- 新建成员对话框：API 或 CLI 接入 -->
+    <dialog class="modal modal-wide" id="new-member-dialog">
+      <form method="dialog" class="modal-inner" id="new-member-form">
+        <h3>新建成员</h3>
+
+        <div class="field-row">
+          <label class="field">
+            <span>成员名称</span>
+            <input id="nm-name" type="text" placeholder="例如：研究员" maxlength="24" required />
+          </label>
+          <label class="field">
+            <span>职责（显示在名字下方）</span>
+            <input id="nm-role" type="text" placeholder="例如：资料检索" maxlength="32" />
+          </label>
+        </div>
+
+        <label class="field">
+          <span>接入方式</span>
+          <select id="nm-backend"></select>
+        </label>
+
+        <p class="field-hint" id="nm-backend-hint"></p>
+
+        <!-- API 专属字段 -->
+        <div id="nm-api-fields" hidden>
+          <label class="field">
+            <span>接口地址（baseUrl）</span>
+            <input id="nm-baseurl" type="text" placeholder="https://api.deepseek.com/v1" />
+          </label>
+          <div class="field-row">
+            <label class="field">
+              <span>模型名</span>
+              <input id="nm-model" type="text" placeholder="deepseek-chat" />
+            </label>
+            <label class="field">
+              <span>API 密钥</span>
+              <input id="nm-apikey" type="password" placeholder="sk-..." autocomplete="off" />
+            </label>
+          </div>
+          <p class="field-hint">
+            密钥会存进 <code>secrets.json</code>，不会写进成员定义，也不会出现在界面上。
+          </p>
+        </div>
+
+        <label class="field">
+          <span>人格设定（system prompt，可留空用默认）</span>
+          <textarea id="nm-persona" rows="5" placeholder="你是指挥室的……&#10;你的风格：……"></textarea>
+        </label>
+
+        <menu class="modal-actions">
+          <button value="cancel" class="ghost-btn" type="button" id="nm-cancel">取消</button>
+          <button value="ok" class="primary-btn" type="submit">创建成员</button>
+        </menu>
+      </form>
+    </dialog>
+
+    <!-- 频道成员管理 -->
+    <dialog class="modal" id="room-members-dialog">
+      <div class="modal-inner">
+        <h3>本频道成员</h3>
+        <div class="chip-grid" id="rm-current"></div>
+        <fieldset class="field">
+          <legend>拉入成员（未在本频道的成员）</legend>
+          <div class="chip-grid" id="rm-addable"></div>
+        </fieldset>
+        <fieldset class="field">
+          <legend>清空上下文（让它忘掉之前的对话，降低 token 消耗）</legend>
+          <div class="chip-grid" id="rm-reset"></div>
+        </fieldset>
+        <menu class="modal-actions">
+          <button class="ghost-btn" type="button" id="rm-close">关闭</button>
+        </menu>
+      </div>
+    </dialog>
+
+    <div class="toast-stack" id="toast-stack" aria-live="assertive"></div>
+
+    <script type="module" src="/bg.js"></script>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

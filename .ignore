@@ -1,0 +1,5 @@
+# 让 ripgrep / grep 跳过运行中的浏览器配置目录。
+# browser-profile 由 Chrome 独占占用（Cookies / LOCK / Sessions_* 等），
+# 遍历时会因 os error 32/33 直接 exit 2，拖垮对整个 command-center 的检索。
+# 加这一条后，对 command-center 的全目录检索恢复可用。
+runtime/browser-profile/

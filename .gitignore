@@ -1,0 +1,26 @@
+# 运行期产物（对话数据、归档、日志、成员密钥）
+data/
+runtime/
+
+# 本机密钥：绝不进版本控制
+secrets.json
+.env
+.env.local
+
+# 截图 / 临时产物
+.shots/
+*.log
+*.tmp
+*.bak
+*.bak-*
+
+# Node（本项目零依赖，但留好习惯）
+node_modules/
+npm-debug.log*
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
