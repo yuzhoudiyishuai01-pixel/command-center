@@ -42,7 +42,8 @@ export const label = "Claude Code CLI";
  */
 export function locate() {
   const cfg = backendConfig();
-  if (cfg.claudeCliPath) return cfg.claudeCliPath;
+  // 用户配置成 .cmd 时也跳过：Windows 上 spawn .cmd 会 EINVAL，继续找原生 exe。
+  if (cfg.claudeCliPath && !/\.(cmd|bat)$/i.test(cfg.claudeCliPath)) return cfg.claudeCliPath;
 
   // 1) npm 全局安装下的原生二进制（首选）
   const appData = process.env.APPDATA ?? "";

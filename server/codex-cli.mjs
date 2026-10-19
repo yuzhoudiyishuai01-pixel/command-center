@@ -33,10 +33,11 @@ export const label = "Codex CLI";
 /** Codex 不在 PATH 里，通常在 %LOCALAPPDATA%\OpenAI\Codex\bin\<hash>\codex.exe。 */
 export function locate() {
   const cfg = backendConfig();
-  if (cfg.codexCliPath) return cfg.codexCliPath;
+  // 同上：.cmd 外壳不可 spawn，跳过它继续找真正的可执行文件。
+  if (cfg.codexCliPath && !/\.(cmd|bat)$/i.test(cfg.codexCliPath)) return cfg.codexCliPath;
 
   const fromPath = whichAny(["codex"], npmGlobalDirs());
-  if (fromPath) return fromPath;
+  if (fromPath && !/\.(cmd|bat)$/i.test(fromPath)) return fromPath;
 
   // 兜底：扫描 Codex 自己的安装目录（版本哈希目录名是随机的）。
   const localAppData = process.env.LOCALAPPDATA ?? "";

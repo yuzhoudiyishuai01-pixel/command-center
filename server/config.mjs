@@ -131,14 +131,18 @@ function loadConfig() {
   }
 
   // 可选 backend 的 CLI 路径同样支持自动探测。
-  merged.backends.claudeCliPath =
-    merged.backends.claudeCliPath
-      ? abs(merged.backends.claudeCliPath)
-      : (findExecutable(["claude"], { extraDirs: claudeHintDirs() }) ?? "");
-  merged.backends.codexCliPath =
-    merged.backends.codexCliPath
-      ? abs(merged.backends.codexCliPath)
-      : (findExecutable(["codex"], { extraDirs: codexHintDirs() }) ?? "");
+  //
+  // 注意：Windows 上 PATH 里常见的 claude/codex 是 npm 生成的 .cmd 外壳，而
+  // Node 20+ 拒绝 spawn .cmd（EINVAL）。所以这里**不把 .cmd 填进配置**——
+  // 让各 backend 自己解析（claude-cli 会去找 npm 包里的原生 claude.exe，
+  // codex-cli 会扫 Codex 桌面版目录），否则等于把坏路径硬塞给它。
+  const keepNative = (detected) => (detected && !/\.(cmd|bat)$/i.test(detected) ? detected : "");
+  merged.backends.claudeCliPath = merged.backends.claudeCliPath
+    ? abs(merged.backends.claudeCliPath)
+    : keepNative(findExecutable(["claude"], { extraDirs: claudeHintDirs() }));
+  merged.backends.codexCliPath = merged.backends.codexCliPath
+    ? abs(merged.backends.codexCliPath)
+    : keepNative(findExecutable(["codex"], { extraDirs: codexHintDirs() }));
 
   return merged;
 }
